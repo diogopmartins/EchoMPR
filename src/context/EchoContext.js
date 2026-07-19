@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useReducer } from 'react';
+import { identityBasis } from '../utils/mprGeometry';
 
 const EchoContext = createContext();
 
@@ -9,6 +10,10 @@ const initialState = {
   meta: null,
   timeIndex: 0,
   crosshair: { x: 0, y: 0, z: 0 },
+  /** Continuous MPR center in voxel coords */
+  mprCenter: { x: 0, y: 0, z: 0 },
+  /** Orthonormal triad in mm-space */
+  mprBasis: identityBasis(),
   windowCenter: 128,
   windowWidth: 256,
   loading: false,
@@ -37,9 +42,9 @@ const echoReducer = (state, action) => {
       const volume = action.payload.volume;
       const mid = volume
         ? {
-            x: Math.floor(volume.dims.x / 2),
-            y: Math.floor(volume.dims.y / 2),
-            z: Math.floor(volume.dims.z / 2),
+            x: (volume.dims.x - 1) / 2,
+            y: (volume.dims.y - 1) / 2,
+            z: (volume.dims.z - 1) / 2,
           }
         : { x: 0, y: 0, z: 0 };
       return {
@@ -51,7 +56,13 @@ const echoReducer = (state, action) => {
           ? [action.payload.dicomData]
           : state.images,
         timeIndex: 0,
-        crosshair: mid,
+        mprCenter: mid,
+        mprBasis: identityBasis(),
+        crosshair: {
+          x: Math.round(mid.x),
+          y: Math.round(mid.y),
+          z: Math.round(mid.z),
+        },
         windowCenter: action.payload.dicomData?.windowCenter ?? 128,
         windowWidth: action.payload.dicomData?.windowWidth ?? 256,
         loading: false,
@@ -61,8 +72,52 @@ const echoReducer = (state, action) => {
     }
     case 'SET_TIME_INDEX':
       return { ...state, timeIndex: action.payload };
-    case 'SET_CROSSHAIR':
-      return { ...state, crosshair: { ...state.crosshair, ...action.payload } };
+    case 'SET_CROSSHAIR': {
+      const next = { ...state.crosshair, ...action.payload };
+      return {
+        ...state,
+        crosshair: next,
+        mprCenter: {
+          x: next.x,
+          y: next.y,
+          z: next.z,
+        },
+      };
+    }
+    case 'SET_MPR_CENTER': {
+      const c = action.payload;
+      return {
+        ...state,
+        mprCenter: c,
+        crosshair: {
+          x: Math.round(c.x),
+          y: Math.round(c.y),
+          z: Math.round(c.z),
+        },
+      };
+    }
+    case 'SET_MPR_BASIS':
+      return { ...state, mprBasis: action.payload };
+    case 'RESET_MPR_ORIENTATION': {
+      const volume = state.volume;
+      const mid = volume
+        ? {
+            x: (volume.dims.x - 1) / 2,
+            y: (volume.dims.y - 1) / 2,
+            z: (volume.dims.z - 1) / 2,
+          }
+        : state.mprCenter;
+      return {
+        ...state,
+        mprBasis: identityBasis(),
+        mprCenter: mid,
+        crosshair: {
+          x: Math.round(mid.x),
+          y: Math.round(mid.y),
+          z: Math.round(mid.z),
+        },
+      };
+    }
     case 'SET_WINDOW_LEVEL':
       return {
         ...state,
@@ -93,6 +148,9 @@ export const EchoProvider = ({ children }) => {
     setTimeIndex: (t) => dispatch({ type: 'SET_TIME_INDEX', payload: t }),
     setCrosshair: (partial) =>
       dispatch({ type: 'SET_CROSSHAIR', payload: partial }),
+    setMprCenter: (c) => dispatch({ type: 'SET_MPR_CENTER', payload: c }),
+    setMprBasis: (b) => dispatch({ type: 'SET_MPR_BASIS', payload: b }),
+    resetMprOrientation: () => dispatch({ type: 'RESET_MPR_ORIENTATION' }),
     setWindowLevel: (wl) => dispatch({ type: 'SET_WINDOW_LEVEL', payload: wl }),
     clearImages: () => dispatch({ type: 'CLEAR_IMAGES' }),
   };
