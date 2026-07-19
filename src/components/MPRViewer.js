@@ -8,6 +8,7 @@ import {
   sampleObliquePlane,
   rotateBasisInPlane,
   translateCenterInPlane,
+  movePlaneByLineDrag,
   nudgeCenterAlongNormal,
   viewSpec,
 } from '../utils/mprGeometry';
@@ -309,38 +310,62 @@ function MPRSlicePane({
     };
   };
 
-  const hitTestMode = (img) => {
+  const hitTestMode = (img, forceTilt) => {
     const slice = sliceRef.current;
-    if (!slice) return 'move';
+    const spec = viewSpec(axis);
+    if (!slice) return { mode: 'move' };
     const dx = img.imgU - img.cx;
     const dy = img.imgV - img.cy;
     const dist = Math.hypot(dx, dy);
-    if (dist < 14) return 'move';
+    if (dist < 16) return { mode: 'move' };
 
     const distToLine = (dir) => {
       const len = Math.hypot(dir.u, dir.v) || 1;
       const u = dir.u / len;
       const v = dir.v / len;
+      // distance to infinite line through center
       return Math.abs(dx * v - dy * u);
     };
     const dA = distToLine(slice.dirs.a);
     const dB = distToLine(slice.dirs.b);
-    if (Math.min(dA, dB) < 12) return 'tilt';
-    return 'move';
+    const hitTol = 18;
+    const nearA = dA < hitTol;
+    const nearB = dB < hitTol;
+
+    if (forceTilt && (nearA || nearB || dist > 20)) {
+      return { mode: 'tilt' };
+    }
+
+    // Grabbing far along a line → tilt that crosshair; near mid-segment → move plane
+    if (nearA || nearB) {
+      const useA = nearA && (!nearB || dA <= dB);
+      const dir = useA ? slice.dirs.a : slice.dirs.b;
+      const planeKey = useA ? spec.lineA.key : spec.lineB.key;
+      const along = Math.abs(
+        (dx * dir.u + dy * dir.v) / (Math.hypot(dir.u, dir.v) || 1)
+      );
+      if (along > 40) {
+        return { mode: 'tilt', planeKey, dir };
+      }
+      return { mode: 'moveLine', planeKey, dir };
+    }
+    return { mode: 'move' };
   };
 
   const onPointerDown = (e) => {
     const img = clientToImage(e.clientX, e.clientY);
     if (!img) return;
-    const mode = e.shiftKey || e.altKey ? 'tilt' : hitTestMode(img);
+    const hit = hitTestMode(img, e.shiftKey || e.altKey);
     dragRef.current = {
-      mode,
+      ...hit,
       lastU: img.imgU,
       lastV: img.imgV,
       lastAngle: Math.atan2(img.ny, img.nx),
     };
     e.currentTarget.setPointerCapture(e.pointerId);
-    e.currentTarget.style.cursor = mode === 'tilt' ? 'grabbing' : 'move';
+    const cursor =
+      hit.mode === 'tilt' ? 'grabbing' : hit.mode === 'moveLine' ? 'ns-resize' : 'move';
+    e.currentTarget.style.cursor = cursor;
   };
 
   const onPointerMove = (e) => {
@@ -357,6 +382,24 @@ function MPRSlicePane({
       drag.lastAngle = angle;
       const spec = viewSpec(axis);
       onBasisChange(rotateBasisInPlane(mprBasis, spec.normalKey, delta));
+    } else if (drag.mode === 'moveLine' && drag.dir && drag.planeKey) {
+      const dU = img.imgU - drag.lastU;
+      const dV = img.imgV - drag.lastV;
+      drag.lastU = img.imgU;
+      drag.lastV = img.imgV;
+      onCenterChange(
+        movePlaneByLineDrag(
+          volume,
+          mprCenter,
+          mprBasis,
+          axis,
+          drag.planeKey,
+          drag.dir.u,
+          drag.dir.v,
+          dU,
+          dV
+        )
+      );
     } else {
       const dU = img.imgU - drag.lastU;
       const dV = img.imgV - drag.lastV;
@@ -383,7 +426,7 @@ function MPRSlicePane({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        title="Drag center to move · Drag near a line (or Shift+drag) to tilt · Wheel to scroll"
+        title="Drag a line to move that plane · Drag line ends or Shift+drag to tilt · Drag center to pan · Wheel to scroll"
       />
       <canvas
         ref={overlayRef}
@@ -416,13 +459,13 @@ const MPRViewer = () => {
   } = useEcho();
 
   const [playing, setPlaying] = useState(false);
-  const [opacity, setOpacity] = useState(0.9);
+  const [opacity, setOpacity] = useState(0.85);
   const [renderMode, setRenderMode] = useState('dvr');
-  const [colorStyle, setColorStyle] = useState('philips');
+  const [colorStyle, setColorStyle] = useState('glass');
   const [useCutPlanes, setUseCutPlanes] = useState(false);
-  const [lightAzimuth, setLightAzimuth] = useState(35);
-  const [lightElevation, setLightElevation] = useState(40);
-  const [lightIntensity, setLightIntensity] = useState(1.15);
+  const [lightAzimuth, setLightAzimuth] = useState(25);
+  const [lightElevation, setLightElevation] = useState(45);
+  const [lightIntensity, setLightIntensity] = useState(1.25);
   const timeRef = useRef(timeIndex);
   timeRef.current = timeIndex;
 
@@ -556,7 +599,7 @@ const MPRViewer = () => {
               const next = e.target.value;
               setColorStyle(next);
               if (next === 'philips' || next === 'glass') setRenderMode('dvr');
-              if (next === 'glass') setOpacity(0.75);
+              if (next === 'glass') setOpacity(0.85);
               if (next === 'philips') setOpacity(0.95);
             }}
             title="Volume color style"

@@ -288,3 +288,42 @@ export function translateCenterInPlane(
   const next = add(add(mm, scale(right, dImgU * pixelMm)), scale(down, dImgV * pixelMm));
   return clampCenter(volume, mmToVoxel(volume, next));
 }
+
+/**
+ * Move a specific MPR plane by dragging its reference line.
+ * `dirU/dirV` = line direction in image space; drag delta projected onto the
+ * perpendicular moves the center along that plane's normal.
+ */
+export function movePlaneByLineDrag(
+  volume,
+  center,
+  basis,
+  axis,
+  planeKey,
+  dirU,
+  dirV,
+  dImgU,
+  dImgV
+) {
+  const spec = viewSpec(axis);
+  const { right, down } = planeAxes(basis[spec.normalKey], spec.worldUp);
+  const sp = spacingMm(volume);
+  const pixelMm = Math.min(sp.x, sp.y, sp.z);
+
+  const len = Math.hypot(dirU, dirV) || 1;
+  const lu = dirU / len;
+  const lv = dirV / len;
+  // Perpendicular in image space
+  const pu = -lv;
+  const pv = lu;
+  const dragAlongPerp = dImgU * pu + dImgV * pv;
+
+  // Map image perpendicular back to 3D to get signed step along plane normal
+  const perp3 = add(scale(right, pu), scale(down, pv));
+  const planeN = basis[planeKey];
+  const sign = Math.sign(dot(perp3, planeN)) || 1;
+
+  const mm = voxelToMm(volume, center);
+  const next = add(mm, scale(planeN, sign * dragAlongPerp * pixelMm));
+  return clampCenter(volume, mmToVoxel(volume, next));
+}
