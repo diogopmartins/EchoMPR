@@ -64,22 +64,16 @@ export function rotateAroundAxis(v, k, angle) {
  * Keeps planes mutually orthogonal.
  */
 export function rotateBasisInPlane(basis, normalKey, angleRad) {
-  const normal = basis[normalKey];
+  const normal = normalize(basis[normalKey]);
   const keys = ['x', 'y', 'z'].filter((k) => k !== normalKey);
   const a = normalize(rotateAroundAxis(basis[keys[0]], normal, angleRad));
-  const b = normalize(cross(normal, a));
-  const next = {
-    ...basis,
-    [normalKey]: normalize(normal),
-    [keys[0]]: a,
-    [keys[1]]: dot(b, basis[keys[1]]) < 0 ? scale(b, -1) : b,
+  let b = normalize(cross(normal, a));
+  if (dot(b, basis[keys[1]]) < 0) b = scale(b, -1);
+  return {
+    x: normalKey === 'x' ? normal : keys[0] === 'x' ? a : b,
+    y: normalKey === 'y' ? normal : keys[0] === 'y' ? a : b,
+    z: normalKey === 'z' ? normal : keys[0] === 'z' ? a : b,
   };
-  // Ensure right-handed
-  const rh = cross(next.x, next.y);
-  if (dot(rh, next.z) < 0) {
-    next.z = scale(next.z, -1);
-  }
-  return next;
 }
 
 export function spacingMm(volume) {
@@ -189,24 +183,26 @@ export function viewSpec(axis) {
 }
 
 /**
- * Sample an oblique plane through center.
- * Returns slice + geometry needed to project reference lines.
+ * Sample an oblique plane through center at a target pixel size.
+ * options: { width, height, zoom } — matches pane aspect and fills the view.
  */
-export function sampleObliquePlane(volume, t, center, basis, axis) {
+export function sampleObliquePlane(volume, t, center, basis, axis, options = {}) {
   const spec = viewSpec(axis);
   const normal = basis[spec.normalKey];
   const { right, down } = planeAxes(normal, spec.worldUp);
   const sp = spacingMm(volume);
-  const pixelMm = Math.min(sp.x, sp.y, sp.z);
+  const zoom = Math.max(0.25, Math.min(8, options.zoom || 1));
 
   const extentMm = Math.hypot(
     volume.dims.x * sp.x,
     volume.dims.y * sp.y,
     volume.dims.z * sp.z
   );
-  const half = extentMm * 0.5;
-  const width = Math.max(48, Math.min(256, Math.round((2 * half) / pixelMm)));
-  const height = width;
+  // Fit volume in the shorter pane axis, then zoom
+  const width = Math.max(64, Math.min(1024, Math.round(options.width || 512)));
+  const height = Math.max(64, Math.min(1024, Math.round(options.height || 512)));
+  const baseFovMm = extentMm * 0.72;
+  const pixelMm = baseFovMm / (Math.min(width, height) * zoom);
 
   const ti = Math.max(0, Math.min(volume.dims.t - 1, t | 0));
   const vol = volume.voxels.subarray(
@@ -254,9 +250,10 @@ export function sampleObliquePlane(volume, t, center, basis, axis) {
     axis,
     center,
     pixelMm,
+    zoom,
     dirs: {
-      a: { ...dirA, color: spec.lineA.color },
-      b: { ...dirB, color: spec.lineB.color },
+      a: { ...dirA, color: spec.lineA.color, planeKey: spec.lineA.key },
+      b: { ...dirB, color: spec.lineB.color, planeKey: spec.lineB.key },
     },
     normalKey: spec.normalKey,
   };

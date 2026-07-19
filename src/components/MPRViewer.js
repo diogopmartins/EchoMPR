@@ -127,10 +127,23 @@ const SliceCanvas = styled.canvas`
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: fill;
   cursor: crosshair;
-  image-rendering: pixelated;
+  image-rendering: auto;
   background: #000;
+`;
+
+const ZoomBadge = styled.div`
+  position: absolute;
+  bottom: 8px;
+  right: 10px;
+  z-index: 2;
+  font-size: 0.7rem;
+  color: #e8e6e3;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  pointer-events: none;
 `;
 
 const Empty = styled.div`
@@ -153,14 +166,12 @@ const AXIS_META = {
 
 function getViewLayout(container, canvas) {
   const rect = container.getBoundingClientRect();
-  const sw = canvas.width;
-  const sh = canvas.height;
-  const scale = Math.min(rect.width / sw, rect.height / sh);
-  const dw = sw * scale;
-  const dh = sh * scale;
-  const ox = (rect.width - dw) / 2;
-  const oy = (rect.height - dh) / 2;
-  return { rect, sw, sh, scale, dw, dh, ox, oy };
+  const sw = canvas.width || 1;
+  const sh = canvas.height || 1;
+  // Sample buffer matches pane aspect → fill the pane
+  const dw = rect.width;
+  const dh = rect.height;
+  return { rect, sw, sh, scale: dw / sw, dw, dh, ox: 0, oy: 0 };
 }
 
 function drawTiltedLine(ctx, cx, cy, dirU, dirV, halfLen, color) {
@@ -185,12 +196,34 @@ function MPRSlicePane({
   windowWidth,
   onCenterChange,
   onBasisChange,
+  zoom,
+  onZoomChange,
 }) {
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
   const containerRef = useRef(null);
   const sliceRef = useRef(null);
   const dragRef = useRef(null);
+  const [paneSize, setPaneSize] = useState({ w: 512, h: 512 });
+  const basisRef = useRef(mprBasis);
+  basisRef.current = mprBasis;
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return undefined;
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      setPaneSize({
+        w: Math.max(64, Math.round(r.width * dpr)),
+        h: Math.max(64, Math.round(r.height * dpr)),
+      });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const drawOverlay = useCallback(
     (slice) => {
@@ -201,43 +234,50 @@ function MPRSlicePane({
       if (!canvas || !overlay || !container || !s) return;
 
       const { rect, dw, dh, ox, oy } = getViewLayout(container, canvas);
-      overlay.width = rect.width * window.devicePixelRatio;
-      overlay.height = rect.height * window.devicePixelRatio;
+      const dpr = window.devicePixelRatio || 1;
+      overlay.width = Math.round(rect.width * dpr);
+      overlay.height = Math.round(rect.height * dpr);
       overlay.style.width = `${rect.width}px`;
       overlay.style.height = `${rect.height}px`;
 
       const ctx = overlay.getContext('2d');
-      ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, rect.width, rect.height);
 
       const cx = ox + dw / 2;
       const cy = oy + dh / 2;
-      const half = Math.max(dw, dh);
+      const half = Math.hypot(dw, dh);
 
-      drawTiltedLine(
-        ctx,
-        cx,
-        cy,
-        s.dirs.a.u,
-        s.dirs.a.v,
-        half,
-        s.dirs.a.color
-      );
-      drawTiltedLine(
-        ctx,
-        cx,
-        cy,
-        s.dirs.b.u,
-        s.dirs.b.v,
-        half,
-        s.dirs.b.color
-      );
+      drawTiltedLine(ctx, cx, cy, s.dirs.a.u, s.dirs.a.v, half, s.dirs.a.color);
+      drawTiltedLine(ctx, cx, cy, s.dirs.b.u, s.dirs.b.v, half, s.dirs.b.color);
+
+      // Rotation handles on each line
+      const drawHandle = (dir, color) => {
+        const len = Math.hypot(dir.u, dir.v) || 1;
+        const u = dir.u / len;
+        const v = dir.v / len;
+        const hx = cx + u * Math.min(dw, dh) * 0.42;
+        const hy = cy + v * Math.min(dw, dh) * 0.42;
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(hx, hy, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx - u * Math.min(dw, dh) * 0.42, cy - v * Math.min(dw, dh) * 0.42, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      };
+      drawHandle(s.dirs.a, s.dirs.a.color);
+      drawHandle(s.dirs.b, s.dirs.b.color);
 
       ctx.fillStyle = '#fff';
       ctx.strokeStyle = AXIS_META[axis].color;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     },
@@ -251,7 +291,8 @@ function MPRSlicePane({
       timeIndex,
       mprCenter,
       mprBasis,
-      axis
+      axis,
+      { width: paneSize.w, height: paneSize.h, zoom }
     );
     sliceRef.current = slice;
     renderSliceToCanvas(canvasRef.current, slice, windowCenter, windowWidth);
@@ -265,6 +306,9 @@ function MPRSlicePane({
     windowCenter,
     windowWidth,
     drawOverlay,
+    paneSize.w,
+    paneSize.h,
+    zoom,
   ]);
 
   useEffect(() => {
@@ -282,15 +326,27 @@ function MPRSlicePane({
     if (!el) return undefined;
     const onWheelNative = (e) => {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? 1 : -1;
-      const spec = viewSpec(axis);
-      onCenterChange(
-        nudgeCenterAlongNormal(volume, mprCenter, mprBasis, spec.normalKey, delta)
-      );
+      // Wheel = zoom; Shift+wheel = scroll through volume
+      if (e.shiftKey) {
+        const delta = e.deltaY > 0 ? 1 : -1;
+        const spec = viewSpec(axis);
+        onCenterChange(
+          nudgeCenterAlongNormal(
+            volume,
+            mprCenter,
+            mprBasis,
+            spec.normalKey,
+            delta
+          )
+        );
+      } else {
+        const factor = e.deltaY > 0 ? 0.9 : 1.1;
+        onZoomChange(Math.max(0.4, Math.min(6, zoom * factor)));
+      }
     };
     el.addEventListener('wheel', onWheelNative, { passive: false });
     return () => el.removeEventListener('wheel', onWheelNative);
-  }, [axis, mprBasis, mprCenter, onCenterChange, volume]);
+  }, [axis, mprBasis, mprCenter, onCenterChange, onZoomChange, volume, zoom]);
 
   const clientToImage = (clientX, clientY) => {
     const canvas = canvasRef.current;
@@ -299,7 +355,7 @@ function MPRSlicePane({
     const { rect, dw, dh, ox, oy, sw, sh } = getViewLayout(container, canvas);
     const lx = (clientX - rect.left - ox) / dw;
     const ly = (clientY - rect.top - oy) / dh;
-    if (lx < 0 || lx > 1 || ly < 0 || ly > 1) return null;
+    if (lx < -0.02 || lx > 1.02 || ly < -0.02 || ly > 1.02) return null;
     return {
       imgU: lx * (sw - 1),
       imgV: ly * (sh - 1),
@@ -307,47 +363,44 @@ function MPRSlicePane({
       ny: ly * 2 - 1,
       cx: 0.5 * (sw - 1),
       cy: 0.5 * (sh - 1),
+      screenDist: Math.hypot(
+        clientX - (rect.left + ox + dw / 2),
+        clientY - (rect.top + oy + dh / 2)
+      ),
     };
   };
 
-  const hitTestMode = (img, forceTilt) => {
+  const hitTestMode = (img, movePlane) => {
     const slice = sliceRef.current;
-    const spec = viewSpec(axis);
     if (!slice) return { mode: 'move' };
     const dx = img.imgU - img.cx;
     const dy = img.imgV - img.cy;
     const dist = Math.hypot(dx, dy);
-    if (dist < 16) return { mode: 'move' };
+    // Hit tolerance scales with sample resolution
+    const hitTol = Math.max(14, Math.min(slice.width, slice.height) * 0.035);
+    const centerTol = Math.max(12, Math.min(slice.width, slice.height) * 0.03);
+    if (dist < centerTol) return { mode: 'move' };
 
     const distToLine = (dir) => {
       const len = Math.hypot(dir.u, dir.v) || 1;
       const u = dir.u / len;
       const v = dir.v / len;
-      // distance to infinite line through center
       return Math.abs(dx * v - dy * u);
     };
     const dA = distToLine(slice.dirs.a);
     const dB = distToLine(slice.dirs.b);
-    const hitTol = 18;
     const nearA = dA < hitTol;
     const nearB = dB < hitTol;
 
-    if (forceTilt && (nearA || nearB || dist > 20)) {
-      return { mode: 'tilt' };
-    }
-
-    // Grabbing far along a line → tilt that crosshair; near mid-segment → move plane
     if (nearA || nearB) {
       const useA = nearA && (!nearB || dA <= dB);
       const dir = useA ? slice.dirs.a : slice.dirs.b;
-      const planeKey = useA ? spec.lineA.key : spec.lineB.key;
-      const along = Math.abs(
-        (dx * dir.u + dy * dir.v) / (Math.hypot(dir.u, dir.v) || 1)
-      );
-      if (along > 40) {
-        return { mode: 'tilt', planeKey, dir };
+      const planeKey = dir.planeKey;
+      // Default: rotate any grabbed line. Ctrl/Alt = translate that plane.
+      if (movePlane) {
+        return { mode: 'moveLine', planeKey, dir };
       }
-      return { mode: 'moveLine', planeKey, dir };
+      return { mode: 'tilt', planeKey, dir };
     }
     return { mode: 'move' };
   };
@@ -355,17 +408,16 @@ function MPRSlicePane({
   const onPointerDown = (e) => {
     const img = clientToImage(e.clientX, e.clientY);
     if (!img) return;
-    const hit = hitTestMode(img, e.shiftKey || e.altKey);
+    const hit = hitTestMode(img, e.ctrlKey || e.metaKey || e.altKey);
     dragRef.current = {
       ...hit,
       lastU: img.imgU,
       lastV: img.imgV,
-      lastAngle: Math.atan2(img.ny, img.nx),
+      lastAngle: Math.atan2(img.imgV - img.cy, img.imgU - img.cx),
     };
     e.currentTarget.setPointerCapture(e.pointerId);
-    const cursor =
+    e.currentTarget.style.cursor =
       hit.mode === 'tilt' ? 'grabbing' : hit.mode === 'moveLine' ? 'ns-resize' : 'move';
-    e.currentTarget.style.cursor = cursor;
   };
 
   const onPointerMove = (e) => {
@@ -375,13 +427,16 @@ function MPRSlicePane({
     if (!img) return;
 
     if (drag.mode === 'tilt') {
-      const angle = Math.atan2(img.ny, img.nx);
+      const angle = Math.atan2(img.imgV - img.cy, img.imgU - img.cx);
       let delta = angle - drag.lastAngle;
       if (delta > Math.PI) delta -= 2 * Math.PI;
       if (delta < -Math.PI) delta += 2 * Math.PI;
       drag.lastAngle = angle;
       const spec = viewSpec(axis);
-      onBasisChange(rotateBasisInPlane(mprBasis, spec.normalKey, delta));
+      // Rotate whole cross around view normal so every line rotates together
+      const next = rotateBasisInPlane(basisRef.current, spec.normalKey, delta);
+      basisRef.current = next;
+      onBasisChange(next);
     } else if (drag.mode === 'moveLine' && drag.dir && drag.planeKey) {
       const dU = img.imgU - drag.lastU;
       const dV = img.imgV - drag.lastV;
@@ -421,12 +476,13 @@ function MPRSlicePane({
   return (
     <Pane ref={containerRef} $borderColor={planeColor}>
       <PaneLabel $color={planeColor}>{AXIS_META[axis].label}</PaneLabel>
+      <ZoomBadge>{Math.round(zoom * 100)}%</ZoomBadge>
       <SliceCanvas
         ref={canvasRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        title="Drag a line to move that plane · Drag line ends or Shift+drag to tilt · Drag center to pan · Wheel to scroll"
+        title="Drag any line to rotate · Ctrl+drag line to move plane · Drag center to pan · Wheel zoom · Shift+wheel scroll"
       />
       <canvas
         ref={overlayRef}
@@ -466,6 +522,7 @@ const MPRViewer = () => {
   const [lightAzimuth, setLightAzimuth] = useState(25);
   const [lightElevation, setLightElevation] = useState(45);
   const [lightIntensity, setLightIntensity] = useState(1.25);
+  const [zoom, setZoom] = useState(1.35);
   const timeRef = useRef(timeIndex);
   timeRef.current = timeIndex;
 
@@ -565,6 +622,19 @@ const MPRViewer = () => {
           />
           <Button onClick={resetMprOrientation} title="Reset plane tilt to orthogonal">
             Reset tilt
+          </Button>
+          <Label>Zoom {Math.round(zoom * 100)}%</Label>
+          <Slider
+            type="range"
+            min={0.4}
+            max={4}
+            step={0.05}
+            value={zoom}
+            onChange={(e) => setZoom(Number(e.target.value))}
+            title="MPR zoom"
+          />
+          <Button onClick={() => setZoom(1.35)} title="Fit default zoom">
+            Fit
           </Button>
         </ToolGroup>
 
@@ -693,6 +763,8 @@ const MPRViewer = () => {
           windowWidth={windowWidth}
           onCenterChange={setMprCenter}
           onBasisChange={setMprBasis}
+          zoom={zoom}
+          onZoomChange={setZoom}
         />
         <MPRSlicePane
           axis="coronal"
@@ -704,6 +776,8 @@ const MPRViewer = () => {
           windowWidth={windowWidth}
           onCenterChange={setMprCenter}
           onBasisChange={setMprBasis}
+          zoom={zoom}
+          onZoomChange={setZoom}
         />
         <MPRSlicePane
           axis="sagittal"
@@ -715,6 +789,8 @@ const MPRViewer = () => {
           windowWidth={windowWidth}
           onCenterChange={setMprCenter}
           onBasisChange={setMprBasis}
+          zoom={zoom}
+          onZoomChange={setZoom}
         />
         <Pane>
           <PaneLabel $color="#3d9a8b">3D Volume</PaneLabel>
