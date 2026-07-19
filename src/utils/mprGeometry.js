@@ -182,9 +182,31 @@ export function viewSpec(axis) {
   };
 }
 
+/** In-plane FOV (mm) for a view so we don't undersample vs native voxels. */
+function viewFovMm(volume, axis) {
+  const sp = spacingMm(volume);
+  const { dims } = volume;
+  if (axis === 'axial') {
+    return { w: dims.x * sp.x, h: dims.y * sp.y };
+  }
+  if (axis === 'coronal') {
+    return { w: dims.x * sp.x, h: dims.z * sp.z };
+  }
+  return { w: dims.y * sp.y, h: dims.z * sp.z };
+}
+
+export function isNearAxisAligned(basis, eps = 0.985) {
+  return (
+    Math.abs(basis.x[0]) > eps &&
+    Math.abs(basis.y[1]) > eps &&
+    Math.abs(basis.z[2]) > eps
+  );
+}
+
 /**
  * Sample an oblique plane through center at a target pixel size.
  * options: { width, height, zoom } — matches pane aspect and fills the view.
+ * Uses view-sized FOV (not full 3D diagonal) so voxels stay sharp like the cart.
  */
 export function sampleObliquePlane(volume, t, center, basis, axis, options = {}) {
   const spec = viewSpec(axis);
@@ -193,16 +215,14 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
   const sp = spacingMm(volume);
   const zoom = Math.max(0.25, Math.min(8, options.zoom || 1));
 
-  const extentMm = Math.hypot(
-    volume.dims.x * sp.x,
-    volume.dims.y * sp.y,
-    volume.dims.z * sp.z
-  );
-  // Fit volume in the shorter pane axis, then zoom
-  const width = Math.max(64, Math.min(1024, Math.round(options.width || 512)));
-  const height = Math.max(64, Math.min(1024, Math.round(options.height || 512)));
-  const baseFovMm = extentMm * 0.72;
-  const pixelMm = baseFovMm / (Math.min(width, height) * zoom);
+  const width = Math.max(64, Math.min(1280, Math.round(options.width || 512)));
+  const height = Math.max(64, Math.min(1280, Math.round(options.height || 512)));
+
+  // FOV matches this plane's physical size (+ small pad), anisotropic pixels
+  const fov = viewFovMm(volume, axis);
+  const pad = 1.06;
+  const stepX = (fov.w * pad) / (width * zoom);
+  const stepY = (fov.h * pad) / (height * zoom);
 
   const ti = Math.max(0, Math.min(volume.dims.t - 1, t | 0));
   const vol = volume.voxels.subarray(
@@ -218,8 +238,8 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
   for (let j = 0; j < height; j++) {
     for (let i = 0; i < width; i++) {
       const mm = add(
-        add(centerMm, scale(right, (i - cx) * pixelMm)),
-        scale(down, (j - cy) * pixelMm)
+        add(centerMm, scale(right, (i - cx) * stepX)),
+        scale(down, (j - cy) * stepY)
       );
       const vox = mmToVoxel(volume, mm);
       data[j * width + i] = trilinear(
@@ -232,12 +252,12 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     }
   }
 
-  // Project other plane normals' intersection directions into image 2D
   const toImageDir = (planeNormal) => {
     let dir = cross(planeNormal, normal);
     if (vecLen(dir) < 1e-6) return { u: 1, v: 0 };
     dir = normalize(dir);
-    return { u: dot(dir, right), v: dot(dir, down) };
+    // Account for anisotropic display scaling
+    return { u: dot(dir, right) / stepX, v: dot(dir, down) / stepY };
   };
 
   const dirA = toImageDir(basis[spec.lineA.key]);
@@ -249,7 +269,7 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     height,
     axis,
     center,
-    pixelMm,
+    pixelMm: (stepX + stepY) * 0.5,
     zoom,
     dirs: {
       a: { ...dirA, color: spec.lineA.color, planeKey: spec.lineA.key },

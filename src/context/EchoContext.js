@@ -14,8 +14,8 @@ const initialState = {
   mprCenter: { x: 0, y: 0, z: 0 },
   /** Orthonormal triad in mm-space */
   mprBasis: identityBasis(),
-  windowCenter: 128,
-  windowWidth: 256,
+  windowCenter: 96,
+  windowWidth: 170,
   loading: false,
   loadProgress: 0,
   error: null,
@@ -63,8 +63,9 @@ const echoReducer = (state, action) => {
           y: Math.round(mid.y),
           z: Math.round(mid.z),
         },
-        windowCenter: action.payload.dicomData?.windowCenter ?? 128,
-        windowWidth: action.payload.dicomData?.windowWidth ?? 256,
+        // Echo carts usually need a tighter W/L than full 8-bit range
+        windowCenter: action.payload.dicomData?.windowCenter || 96,
+        windowWidth: action.payload.dicomData?.windowWidth || 170,
         loading: false,
         loadProgress: 1,
         error: null,

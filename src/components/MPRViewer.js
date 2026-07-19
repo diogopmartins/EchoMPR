@@ -515,14 +515,14 @@ const MPRViewer = () => {
   } = useEcho();
 
   const [playing, setPlaying] = useState(false);
-  const [opacity, setOpacity] = useState(0.85);
+  const [opacity, setOpacity] = useState(0.5);
   const [renderMode, setRenderMode] = useState('dvr');
   const [colorStyle, setColorStyle] = useState('glass');
   const [useCutPlanes, setUseCutPlanes] = useState(false);
-  const [lightAzimuth, setLightAzimuth] = useState(25);
-  const [lightElevation, setLightElevation] = useState(45);
-  const [lightIntensity, setLightIntensity] = useState(1.25);
-  const [zoom, setZoom] = useState(1.35);
+  const [lightAzimuth, setLightAzimuth] = useState(30);
+  const [lightElevation, setLightElevation] = useState(48);
+  const [lightIntensity, setLightIntensity] = useState(1.35);
+  const [zoom, setZoom] = useState(1.5);
   const timeRef = useRef(timeIndex);
   timeRef.current = timeIndex;
 
@@ -669,8 +669,8 @@ const MPRViewer = () => {
               const next = e.target.value;
               setColorStyle(next);
               if (next === 'philips' || next === 'glass') setRenderMode('dvr');
-              if (next === 'glass') setOpacity(0.85);
-              if (next === 'philips') setOpacity(0.95);
+              if (next === 'glass') setOpacity(0.5);
+              if (next === 'philips') setOpacity(0.9);
             }}
             title="Volume color style"
           >

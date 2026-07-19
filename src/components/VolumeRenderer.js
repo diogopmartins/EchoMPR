@@ -30,8 +30,8 @@ uniform float opacity;
 uniform float threshold;
 uniform float steps;
 uniform vec3 clim;
-uniform int renderMode;   // 0 = MIP, 1 = DVR
-uniform int colorStyle;   // 0 = gray, 1 = philips, 2 = glass
+uniform int renderMode;
+uniform int colorStyle;
 uniform vec3 cutPlane;
 uniform bool useCutPlanes;
 uniform vec3 lightDir;
@@ -58,66 +58,55 @@ float sampleDensity(vec3 uv) {
 }
 
 vec3 sampleGradient(vec3 uv) {
-  vec3 e = 1.25 / max(volumeDims, vec3(1.0));
+  vec3 e = 1.0 / max(volumeDims, vec3(1.0));
   float dx = sampleDensity(uv + vec3(e.x, 0.0, 0.0)) - sampleDensity(uv - vec3(e.x, 0.0, 0.0));
   float dy = sampleDensity(uv + vec3(0.0, e.y, 0.0)) - sampleDensity(uv - vec3(0.0, e.y, 0.0));
   float dz = sampleDensity(uv + vec3(0.0, 0.0, e.z)) - sampleDensity(uv - vec3(0.0, 0.0, e.z));
   return vec3(dx, dy, dz);
 }
 
-// Solid Philips tissue (warm copper)
 vec3 philipsColor(float t) {
   t = clamp(t, 0.0, 1.0);
   vec3 c0 = vec3(0.02, 0.01, 0.01);
-  vec3 c1 = vec3(0.28, 0.08, 0.04);
-  vec3 c2 = vec3(0.72, 0.32, 0.12);
-  vec3 c3 = vec3(0.95, 0.62, 0.38);
-  vec3 c4 = vec3(1.0, 0.92, 0.78);
+  vec3 c1 = vec3(0.35, 0.12, 0.06);
+  vec3 c2 = vec3(0.82, 0.42, 0.22);
+  vec3 c3 = vec3(0.98, 0.72, 0.48);
+  vec3 c4 = vec3(1.0, 0.94, 0.82);
   if (t < 0.25) return mix(c0, c1, t / 0.25);
   if (t < 0.5) return mix(c1, c2, (t - 0.25) / 0.25);
   if (t < 0.75) return mix(c2, c3, (t - 0.5) / 0.25);
   return mix(c3, c4, (t - 0.75) / 0.25);
 }
 
-// Philips Live 3D "Glass": lit/near = flesh-copper, shadow/depth = translucent blue
-vec3 glassShade(float intensity, vec3 grad, vec3 viewDir, vec3 L) {
-  float gLen = length(grad);
-  vec3 N = gLen > 1e-4 ? normalize(grad) : vec3(0.0, 0.0, 1.0);
-  float ndotl = abs(dot(N, L));
-  vec3 H = normalize(L + normalize(viewDir));
-  float spec = pow(max(abs(dot(N, H)), 0.0), specularPower);
-  float fresnel = pow(1.0 - abs(dot(N, normalize(viewDir))), 2.4);
+/**
+ * Philips EPIQ-like glass:
+ * - front/lit tissue: peach-copper
+ * - depth / shadow / cavities: translucent blue you can see through
+ * - very low per-sample alpha so openings stay see-through
+ */
+vec3 glassColor(float intensity, float ndotl, float fresnel, float depthFog) {
+  vec3 peach = vec3(0.95, 0.58, 0.38);
+  vec3 copper = vec3(0.85, 0.40, 0.22);
+  vec3 blueHi = vec3(0.35, 0.62, 0.95);
+  vec3 blueLo = vec3(0.08, 0.22, 0.55);
 
-  // Warm front / cool depth (matches EPIQ glass preset)
-  vec3 copper = vec3(0.92, 0.48, 0.28);
-  vec3 flesh = vec3(0.78, 0.36, 0.26);
-  vec3 blueGlass = vec3(0.22, 0.48, 0.82);
-  vec3 deepBlue = vec3(0.06, 0.14, 0.32);
-  vec3 mist = vec3(0.75, 0.88, 0.98);
+  float lit = smoothstep(0.08, 0.65, ndotl);
+  vec3 warm = mix(copper, peach, clamp(intensity, 0.0, 1.0));
+  vec3 cool = mix(blueLo, blueHi, clamp(intensity * 0.9 + fresnel * 0.35, 0.0, 1.0));
 
-  float lit = smoothstep(0.12, 0.75, ndotl * lightIntensity);
-  vec3 warm = mix(flesh, copper, clamp(intensity * 1.1, 0.0, 1.0));
-  vec3 cool = mix(deepBlue, mix(blueGlass, mist, fresnel * 0.55), intensity);
-  vec3 base = mix(cool, warm, lit);
-
-  // Glossy specular + blue rim like Philips glass
-  base += vec3(1.0, 0.95, 0.88) * spec * lightIntensity * 0.75;
-  base += blueGlass * fresnel * 0.35;
-  base *= ambient + 0.55 + 0.45 * lit;
-  return base;
+  // Deeper along the ray → more blue glass
+  float frontness = (1.0 - depthFog) * lit;
+  return mix(cool, warm, frontness);
 }
 
-vec3 shadeGrayPhilips(vec3 base, vec3 grad, vec3 viewDir) {
+vec3 shadeSolid(vec3 base, vec3 grad, vec3 viewDir, vec3 L) {
   float gLen = length(grad);
-  if (gLen < 1e-4) {
-    return base * (ambient + 0.15 * lightIntensity);
-  }
+  if (gLen < 1e-4) return base * (ambient + 0.2 * lightIntensity);
   vec3 N = normalize(grad);
-  float ndotl = abs(dot(N, normalize(lightDir)));
-  vec3 H = normalize(normalize(lightDir) + normalize(viewDir));
+  float ndotl = abs(dot(N, L));
+  vec3 H = normalize(L + normalize(viewDir));
   float spec = pow(abs(dot(N, H)), specularPower);
-  float diffuse = ambient + lightIntensity * ndotl;
-  return base * diffuse + vec3(1.0) * spec * lightIntensity * 0.4;
+  return base * (ambient + lightIntensity * ndotl) + vec3(1.0) * spec * lightIntensity * 0.35;
 }
 
 void main() {
@@ -135,12 +124,14 @@ void main() {
   vec3 maxPos = p;
   vec4 ac = vec4(0.0);
   vec3 L = normalize(lightDir);
+  float rayLen = max(bounds.y - bounds.x, 1e-4);
 
-  float alphaScale = colorStyle == 2 ? 0.055 : (colorStyle == 1 ? 0.11 : 0.08);
-  alphaScale *= opacity;
-  float localThreshold = colorStyle == 2 ? max(threshold, 0.06) : threshold;
+  // Glass must stay translucent — much thinner than solid DVR
+  float glassOpacity = clamp(opacity * 0.55, 0.15, 1.0);
+  float solidScale = opacity * (colorStyle == 1 ? 0.10 : 0.08);
+  float localThreshold = colorStyle == 2 ? 0.04 : threshold;
 
-  for (float i = 0.0; i < 640.0; i++) {
+  for (float i = 0.0; i < 768.0; i++) {
     if (i >= steps) break;
     vec3 uv = p + 0.5;
 
@@ -155,6 +146,8 @@ void main() {
       if (visible) {
         float d = sampleDensity(uv);
         float intensity = smoothstep(clim.x, clim.y, d);
+        // Echo soft knee — suppress noise floor
+        intensity = pow(intensity, colorStyle == 2 ? 1.15 : 1.0);
 
         if (renderMode == 0) {
           if (d > maxVal) {
@@ -163,26 +156,34 @@ void main() {
           }
         } else if (intensity > localThreshold) {
           vec3 grad = sampleGradient(uv);
-          vec3 col;
-          float a;
+          float gLen = length(grad);
+          vec3 N = gLen > 1e-4 ? normalize(grad) : -rayDir;
+          float ndotl = abs(dot(N, L)) * lightIntensity;
+          float fresnel = pow(1.0 - abs(dot(N, -rayDir)), 2.2);
+          float depthFog = clamp((distance(p, vOrigin) - bounds.x) / rayLen, 0.0, 1.0);
 
           if (colorStyle == 2) {
-            col = glassShade(intensity, grad, -rayDir, L);
-            // Translucent: thin tissue more see-through, surfaces hold
-            float g = length(grad);
-            a = mix(0.02, 0.14, intensity) * opacity;
-            a *= mix(0.45, 1.15, smoothstep(0.02, 0.25, g));
-          } else if (colorStyle == 1) {
-            col = shadeGrayPhilips(philipsColor(intensity), grad, -rayDir);
-            a = intensity * alphaScale;
-          } else {
-            col = shadeGrayPhilips(vec3(intensity), grad, -rayDir);
-            a = intensity * alphaScale;
-          }
+            vec3 col = glassColor(intensity, ndotl, fresnel, depthFog);
+            col += vec3(1.0, 0.96, 0.9) * pow(max(abs(dot(N, normalize(L - rayDir))), 0.0), 48.0) * 0.45 * lightIntensity;
 
-          ac.rgb += (1.0 - ac.a) * a * col;
-          ac.a += (1.0 - ac.a) * a;
-          if (ac.a > 0.96) break;
+            // Surface edges a bit denser; interiors very see-through
+            float surface = smoothstep(0.02, 0.18, gLen);
+            float a = intensity * intensity * mix(0.012, 0.045, surface) * glassOpacity;
+            // Keep openings open: cap contribution when already fogged
+            a *= (1.0 - ac.a * 0.65);
+
+            ac.rgb += (1.0 - ac.a) * a * col;
+            ac.a += (1.0 - ac.a) * a;
+            // Allow seeing through — do not early-exit until nearly solid
+            if (ac.a > 0.88) break;
+          } else {
+            vec3 base = colorStyle == 1 ? philipsColor(intensity) : vec3(intensity);
+            vec3 col = shadeSolid(base, grad, -rayDir, L);
+            float a = intensity * solidScale;
+            ac.rgb += (1.0 - ac.a) * a * col;
+            ac.a += (1.0 - ac.a) * a;
+            if (ac.a > 0.96) break;
+          }
         }
       }
     }
@@ -196,18 +197,22 @@ void main() {
     float intensity = smoothstep(clim.x, clim.y, maxVal);
     vec3 uv = maxPos + 0.5;
     vec3 grad = sampleGradient(uv);
+    vec3 N = length(grad) > 1e-4 ? normalize(grad) : -rayDir;
+    float ndotl = abs(dot(N, L)) * lightIntensity;
+    float fresnel = pow(1.0 - abs(dot(N, -rayDir)), 2.2);
     vec3 col;
     if (colorStyle == 2) {
-      col = glassShade(intensity, grad, -rayDir, L);
-    } else if (colorStyle == 1) {
-      col = shadeGrayPhilips(philipsColor(intensity), grad, -rayDir);
+      col = glassColor(intensity, ndotl, fresnel, 0.2);
+      fragColor = vec4(col, clamp(intensity * glassOpacity * 0.85, 0.0, 0.9));
     } else {
-      col = shadeGrayPhilips(vec3(intensity), grad, -rayDir);
+      vec3 base = colorStyle == 1 ? philipsColor(intensity) : vec3(intensity);
+      col = shadeSolid(base, grad, -rayDir, L);
+      fragColor = vec4(col, clamp(opacity * intensity, 0.0, 1.0));
     }
-    fragColor = vec4(col, clamp(opacity * mix(0.35, 1.0, intensity), 0.0, 1.0));
   } else {
-    if (ac.a < 0.01) discard;
-    fragColor = vec4(ac.rgb, ac.a);
+    if (ac.a < 0.008) discard;
+    // Premultiplied-style soft composite on black
+    fragColor = vec4(ac.rgb, colorStyle == 2 ? min(ac.a, 0.92) : ac.a);
   }
 }
 `;
@@ -259,8 +264,8 @@ function VolumeMesh({
   useEffect(() => () => texture.dispose(), [texture]);
 
   const clim = useMemo(() => {
-    const wc = windowCenter ?? 128;
-    const ww = Math.max(1, windowWidth ?? 256);
+    const wc = windowCenter ?? 100;
+    const ww = Math.max(1, windowWidth ?? 160);
     const min = Math.max(0, (wc - ww / 2) / 255);
     const max = Math.min(1, (wc + ww / 2) / 255);
     return new THREE.Vector3(min, max, 0);
@@ -298,8 +303,8 @@ function VolumeMesh({
       map: { value: texture },
       cameraPos: { value: new THREE.Vector3() },
       opacity: { value: opacity },
-      threshold: { value: colorStyle === 'glass' ? 0.07 : 0.04 },
-      steps: { value: colorStyle === 'glass' ? 240 : 200 },
+      threshold: { value: 0.03 },
+      steps: { value: colorStyle === 'glass' ? 280 : 200 },
       clim: { value: clim },
       renderMode: { value: MODE_MAP[renderMode] ?? 1 },
       colorStyle: { value: STYLE_MAP[colorStyle] ?? 2 },
@@ -307,8 +312,8 @@ function VolumeMesh({
       useCutPlanes: { value: useCutPlanes },
       lightDir: { value: lightDir },
       lightIntensity: { value: lightIntensity },
-      ambient: { value: colorStyle === 'glass' ? 0.32 : 0.28 },
-      specularPower: { value: colorStyle === 'glass' ? 64.0 : 22.0 },
+      ambient: { value: colorStyle === 'glass' ? 0.4 : 0.28 },
+      specularPower: { value: colorStyle === 'glass' ? 56.0 : 22.0 },
       volumeDims: { value: volumeDims },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -320,8 +325,8 @@ function VolumeMesh({
     const u = materialRef.current.uniforms;
     u.map.value = texture;
     u.opacity.value = opacity;
-    u.threshold.value = colorStyle === 'glass' ? 0.07 : 0.04;
-    u.steps.value = colorStyle === 'glass' ? 240 : 200;
+    u.threshold.value = 0.03;
+    u.steps.value = colorStyle === 'glass' ? 280 : 200;
     u.clim.value = clim;
     u.renderMode.value = MODE_MAP[renderMode] ?? 1;
     u.colorStyle.value = STYLE_MAP[colorStyle] ?? 2;
@@ -329,8 +334,8 @@ function VolumeMesh({
     u.useCutPlanes.value = useCutPlanes;
     u.lightDir.value = lightDir;
     u.lightIntensity.value = lightIntensity;
-    u.ambient.value = colorStyle === 'glass' ? 0.32 : 0.28;
-    u.specularPower.value = colorStyle === 'glass' ? 64.0 : 22.0;
+    u.ambient.value = colorStyle === 'glass' ? 0.4 : 0.28;
+    u.specularPower.value = colorStyle === 'glass' ? 56.0 : 22.0;
     u.volumeDims.value = volumeDims;
   }, [
     texture,
@@ -367,14 +372,14 @@ const VolumeRenderer = ({
   timeIndex,
   windowCenter,
   windowWidth,
-  opacity = 0.85,
+  opacity = 0.55,
   renderMode = 'dvr',
   colorStyle = 'glass',
   crosshair,
   useCutPlanes = false,
-  lightAzimuth = 25,
-  lightElevation = 45,
-  lightIntensity = 1.25,
+  lightAzimuth = 30,
+  lightElevation = 48,
+  lightIntensity = 1.35,
 }) => {
   if (!volume) return null;
 

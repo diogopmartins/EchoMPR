@@ -203,6 +203,18 @@ function clampIndex(index, size) {
 }
 
 /**
+ * Echo-style display: window/level + soft contrast curve (closer to cart display).
+ */
+export function applyEchoDisplay(value, windowCenter, windowWidth) {
+  let v = applyWindowLevel(value, windowCenter, windowWidth) / 255;
+  // Lift mid-grays, gentle gamma like ultrasound cart post-processing
+  v = Math.pow(Math.max(0, v), 0.85);
+  v = v * 1.08;
+  if (v > 1) v = 1;
+  return Math.round(v * 255);
+}
+
+/**
  * Draw a raw intensity slice onto a canvas with window/level.
  */
 export function renderSliceToCanvas(canvas, slice, windowCenter, windowWidth) {
@@ -216,7 +228,7 @@ export function renderSliceToCanvas(canvas, slice, windowCenter, windowWidth) {
   const rgba = imageData.data;
 
   for (let i = 0; i < data.length; i++) {
-    const v = applyWindowLevel(data[i], windowCenter, windowWidth);
+    const v = applyEchoDisplay(data[i], windowCenter, windowWidth);
     const o = i * 4;
     rgba[o] = v;
     rgba[o + 1] = v;
