@@ -212,7 +212,6 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
   const spec = viewSpec(axis);
   const normal = basis[spec.normalKey];
   const { right, down } = planeAxes(normal, spec.worldUp);
-  const sp = spacingMm(volume);
   const zoom = Math.max(0.25, Math.min(8, options.zoom || 1));
 
   const width = Math.max(64, Math.min(1280, Math.round(options.width || 512)));
