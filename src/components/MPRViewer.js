@@ -1,7 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { Canvas } from '@react-three/fiber';
-import { Play, Pause, Download } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  Download,
+  SkipBack,
+  SkipForward,
+  RotateCcw,
+} from 'lucide-react';
 import { useEcho } from '../context/EchoContext';
 import { renderSliceToCanvas, physicalSizeMm } from '../utils/philipsVolume';
 import {
@@ -14,79 +21,76 @@ import {
 } from '../utils/mprGeometry';
 import { exportToNRRD } from '../utils/dicomParser';
 import VolumeRenderer from './VolumeRenderer';
+import { qlab } from '../theme';
 
 const Container = styled.div`
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #0f1419;
-  color: #e8e6e3;
-  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  background: ${qlab.bg};
+  color: ${qlab.text};
+  font-family: 'Segoe UI', Tahoma, sans-serif;
 `;
 
-const Toolbar = styled.div`
+const ControlsBar = styled.div`
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1rem;
-  background: #1a222c;
-  border-bottom: 1px solid #2a3542;
+  gap: 0.65rem 1rem;
+  padding: 0.35rem 0.65rem;
+  background: ${qlab.panel};
+  border-bottom: 1px solid ${qlab.border};
+  flex-shrink: 0;
 `;
 
 const ToolGroup = styled.div`
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
 `;
 
 const Label = styled.label`
-  font-size: 0.75rem;
-  color: #9aa5b1;
+  font-size: 0.7rem;
+  color: ${qlab.textMuted};
   white-space: nowrap;
 `;
 
 const Slider = styled.input`
-  width: 120px;
-  accent-color: #3d9a8b;
+  width: 90px;
+  accent-color: ${qlab.amber};
+  height: 4px;
 `;
 
 const Button = styled.button`
-  background: ${(p) => (p.$active ? '#3d9a8b' : '#243040')};
-  border: 1px solid ${(p) => (p.$active ? '#4db8a6' : '#3a4a5c')};
-  color: #e8e6e3;
-  border-radius: 6px;
-  padding: 0.4rem 0.65rem;
+  background: ${(p) => (p.$active ? qlab.amberDim : qlab.panelElevated)};
+  border: 1px solid ${(p) => (p.$active ? qlab.amber : qlab.border)};
+  color: ${(p) => (p.$active ? '#fff8e6' : qlab.text)};
+  border-radius: 2px;
+  padding: 0.25rem 0.5rem;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
+  gap: 0.3rem;
+  font-size: 0.72rem;
 
   &:hover {
-    background: ${(p) => (p.$active ? '#45a994' : '#2e3d50')};
+    border-color: ${qlab.amber};
   }
 
   &:disabled {
-    opacity: 0.45;
+    opacity: 0.4;
     cursor: not-allowed;
   }
 `;
 
 const Select = styled.select`
-  background: #243040;
-  border: 1px solid #3a4a5c;
-  color: #e8e6e3;
-  border-radius: 6px;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.85rem;
+  background: ${qlab.panelElevated};
+  border: 1px solid ${qlab.border};
+  color: ${qlab.text};
+  border-radius: 2px;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.72rem;
   cursor: pointer;
-`;
-
-const Meta = styled.div`
-  margin-left: auto;
-  font-size: 0.8rem;
-  color: #9aa5b1;
 `;
 
 const Grid = styled.div`
@@ -94,9 +98,9 @@ const Grid = styled.div`
   display: grid;
   grid-template-columns: 1fr 1fr;
   grid-template-rows: 1fr 1fr;
-  gap: 2px;
+  gap: 1px;
   min-height: 0;
-  background: #2a3542;
+  background: #2a2a2a;
 `;
 
 const Pane = styled.div`
@@ -104,21 +108,18 @@ const Pane = styled.div`
   background: #000;
   overflow: hidden;
   min-height: 0;
-  box-shadow: inset 0 0 0 2px ${(p) => p.$borderColor || 'transparent'};
+  box-shadow: inset 0 0 0 2px ${(p) => p.$borderColor || qlab.volumeBorder};
 `;
 
 const PaneLabel = styled.div`
   position: absolute;
-  top: 8px;
-  left: 10px;
+  top: 6px;
+  left: 8px;
   z-index: 2;
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #fff;
-  background: ${(p) => p.$color || '#666'};
-  padding: 0.2rem 0.45rem;
-  border-radius: 3px;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: ${(p) => p.$color || '#ccc'};
+  text-shadow: 0 0 3px #000, 0 1px 2px #000;
   pointer-events: none;
   font-weight: 600;
 `;
@@ -135,14 +136,12 @@ const SliceCanvas = styled.canvas`
 
 const ZoomBadge = styled.div`
   position: absolute;
-  bottom: 8px;
-  right: 10px;
+  bottom: 6px;
+  right: 8px;
   z-index: 2;
-  font-size: 0.7rem;
-  color: #e8e6e3;
-  background: rgba(0, 0, 0, 0.55);
-  padding: 0.15rem 0.4rem;
-  border-radius: 3px;
+  font-size: 0.65rem;
+  color: #ccc;
+  text-shadow: 0 1px 2px #000;
   pointer-events: none;
 `;
 
@@ -151,17 +150,46 @@ const Empty = styled.div`
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9aa5b1;
-  font-size: 1.05rem;
+  color: ${qlab.textMuted};
+  font-size: 0.95rem;
   padding: 2rem;
   text-align: center;
 `;
 
-// Standard MPR RGB: sagittal=red (X), coronal=green (Y), axial=blue (Z)
+const PlaybackBar = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.4rem 0.75rem;
+  background: ${qlab.panel};
+  border-top: 1px solid ${qlab.border};
+  flex-shrink: 0;
+`;
+
+const FrameInfo = styled.div`
+  font-size: 0.75rem;
+  color: ${qlab.amberBright};
+  min-width: 4.5rem;
+  font-variant-numeric: tabular-nums;
+`;
+
+const Timeline = styled.input`
+  flex: 1;
+  accent-color: ${qlab.amber};
+  height: 4px;
+`;
+
+const PlayMeta = styled.div`
+  font-size: 0.7rem;
+  color: ${qlab.textMuted};
+  white-space: nowrap;
+`;
+
+// QLAB-style RGB: green / red / blue pane borders
 const AXIS_META = {
-  sagittal: { label: 'Sagittal (X)', color: '#e53935', key: 'x' },
-  coronal: { label: 'Coronal (Y)', color: '#43a047', key: 'y' },
-  axial: { label: 'Axial (Z)', color: '#1e88e5', key: 'z' },
+  coronal: { label: 'A', color: qlab.green, key: 'y' },
+  sagittal: { label: 'B', color: qlab.red, key: 'x' },
+  axial: { label: 'C', color: qlab.blue, key: 'z' },
 };
 
 function getViewLayout(container, canvas) {
@@ -521,7 +549,7 @@ const MPRViewer = () => {
   const [useCutPlanes, setUseCutPlanes] = useState(false);
   const [lightAzimuth, setLightAzimuth] = useState(30);
   const [lightElevation, setLightElevation] = useState(48);
-  const [lightIntensity, setLightIntensity] = useState(1.35);
+  const lightIntensity = 1.35;
   const [zoom, setZoom] = useState(1.5);
   const timeRef = useRef(timeIndex);
   timeRef.current = timeIndex;
@@ -554,46 +582,20 @@ const MPRViewer = () => {
   if (!volume) {
     return (
       <Container>
-        <Empty>
-          No volume loaded. Upload a Philips QLAB Cartesian DICOM (.dcm) to start
-          MPR.
-        </Empty>
+        <Empty>No volume loaded. Use Load to open a QLAB Cartesian DICOM.</Empty>
       </Container>
     );
   }
 
   const sizeMm = physicalSizeMm(volume);
-  const meta = volume.meta || {};
+  const frameTime = volume.frameTimeMs || 50;
+  const tSec = ((timeIndex * frameTime) / 1000).toFixed(2);
 
   return (
     <Container>
-      <Toolbar>
+      <ControlsBar>
         <ToolGroup>
-          <Button
-            onClick={() => setPlaying((p) => !p)}
-            disabled={volume.dims.t <= 1}
-            title="Cine play/pause"
-          >
-            {playing ? <Pause size={16} /> : <Play size={16} />}
-            Cine
-          </Button>
-          <Label>
-            T {timeIndex + 1}/{volume.dims.t}
-          </Label>
-          <Slider
-            type="range"
-            min={0}
-            max={Math.max(0, volume.dims.t - 1)}
-            value={timeIndex}
-            onChange={(e) => {
-              setPlaying(false);
-              setTimeIndex(Number(e.target.value));
-            }}
-          />
-        </ToolGroup>
-
-        <ToolGroup>
-          <Label style={{ color: AXIS_META.sagittal.color }}>X {crosshair.x}</Label>
+          <Label style={{ color: AXIS_META.sagittal.color }}>X</Label>
           <Slider
             type="range"
             min={0}
@@ -602,7 +604,7 @@ const MPRViewer = () => {
             onChange={(e) => setCrosshair({ x: Number(e.target.value) })}
             style={{ accentColor: AXIS_META.sagittal.color }}
           />
-          <Label style={{ color: AXIS_META.coronal.color }}>Y {crosshair.y}</Label>
+          <Label style={{ color: AXIS_META.coronal.color }}>Y</Label>
           <Slider
             type="range"
             min={0}
@@ -611,7 +613,7 @@ const MPRViewer = () => {
             onChange={(e) => setCrosshair({ y: Number(e.target.value) })}
             style={{ accentColor: AXIS_META.coronal.color }}
           />
-          <Label style={{ color: AXIS_META.axial.color }}>Z {crosshair.z}</Label>
+          <Label style={{ color: AXIS_META.axial.color }}>Z</Label>
           <Slider
             type="range"
             min={0}
@@ -620,10 +622,14 @@ const MPRViewer = () => {
             onChange={(e) => setCrosshair({ z: Number(e.target.value) })}
             style={{ accentColor: AXIS_META.axial.color }}
           />
-          <Button onClick={resetMprOrientation} title="Reset plane tilt to orthogonal">
-            Reset tilt
+          <Button onClick={resetMprOrientation} title="Reset tilt">
+            <RotateCcw size={12} />
+            Reset
           </Button>
-          <Label>Zoom {Math.round(zoom * 100)}%</Label>
+        </ToolGroup>
+
+        <ToolGroup>
+          <Label>Zoom</Label>
           <Slider
             type="range"
             min={0.4}
@@ -631,15 +637,12 @@ const MPRViewer = () => {
             step={0.05}
             value={zoom}
             onChange={(e) => setZoom(Number(e.target.value))}
-            title="MPR zoom"
           />
-          <Button onClick={() => setZoom(1.35)} title="Fit default zoom">
-            Fit
-          </Button>
+          <Button onClick={() => setZoom(1.5)}>Fit</Button>
         </ToolGroup>
 
         <ToolGroup>
-          <Label>WC {windowCenter}</Label>
+          <Label>WC</Label>
           <Slider
             type="range"
             min={0}
@@ -649,7 +652,7 @@ const MPRViewer = () => {
               setWindowLevel({ windowCenter: Number(e.target.value) })
             }
           />
-          <Label>WW {windowWidth}</Label>
+          <Label>WW</Label>
           <Slider
             type="range"
             min={1}
@@ -662,7 +665,7 @@ const MPRViewer = () => {
         </ToolGroup>
 
         <ToolGroup>
-          <Label>3D style</Label>
+          <Label>3D</Label>
           <Select
             value={colorStyle}
             onChange={(e) => {
@@ -670,29 +673,20 @@ const MPRViewer = () => {
               setColorStyle(next);
               if (next === 'philips' || next === 'glass') setRenderMode('dvr');
               if (next === 'glass') setOpacity(0.5);
-              if (next === 'philips') setOpacity(0.9);
+              if (next === 'philips') setOpacity(0.85);
             }}
-            title="Volume color style"
           >
-            <option value="philips">Philips</option>
             <option value="glass">Glass</option>
+            <option value="philips">Tissue</option>
             <option value="gray">Gray</option>
           </Select>
-          <Button
-            $active={renderMode === 'dvr'}
-            onClick={() => setRenderMode('dvr')}
-            title="Shaded volume rendering"
-          >
+          <Button $active={renderMode === 'dvr'} onClick={() => setRenderMode('dvr')}>
             DVR
           </Button>
-          <Button
-            $active={renderMode === 'mip'}
-            onClick={() => setRenderMode('mip')}
-            title="Maximum intensity projection"
-          >
+          <Button $active={renderMode === 'mip'} onClick={() => setRenderMode('mip')}>
             MIP
           </Button>
-          <Label>Opacity</Label>
+          <Label>Op</Label>
           <Slider
             type="range"
             min={0.15}
@@ -701,71 +695,33 @@ const MPRViewer = () => {
             value={opacity}
             onChange={(e) => setOpacity(Number(e.target.value))}
           />
-        </ToolGroup>
-
-        <ToolGroup>
-          <Label>Light az</Label>
+          <Label>Light</Label>
           <Slider
             type="range"
             min={0}
             max={360}
             value={lightAzimuth}
             onChange={(e) => setLightAzimuth(Number(e.target.value))}
-            title="Light azimuth"
           />
-          <Label>el</Label>
           <Slider
             type="range"
             min={-80}
             max={80}
             value={lightElevation}
             onChange={(e) => setLightElevation(Number(e.target.value))}
-            title="Light elevation"
           />
-          <Label>int</Label>
-          <Slider
-            type="range"
-            min={0.2}
-            max={2}
-            step={0.05}
-            value={lightIntensity}
-            onChange={(e) => setLightIntensity(Number(e.target.value))}
-            title="Light intensity"
-          />
-          <Button
-            $active={useCutPlanes}
-            onClick={() => setUseCutPlanes((v) => !v)}
-            title="Cut volume at crosshair"
-          >
-            {useCutPlanes ? 'Cuts on' : 'Cuts off'}
+          <Button $active={useCutPlanes} onClick={() => setUseCutPlanes((v) => !v)}>
+            Crop
           </Button>
           <Button onClick={exportFrame}>
-            <Download size={16} />
+            <Download size={12} />
             NRRD
           </Button>
         </ToolGroup>
-
-        <Meta>
-          {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
-          × {volume.dims.t} · {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×
-          {sizeMm.z.toFixed(0)} mm
-        </Meta>
-      </Toolbar>
+      </ControlsBar>
 
       <Grid>
-        <MPRSlicePane
-          axis="axial"
-          volume={volume}
-          timeIndex={timeIndex}
-          mprCenter={mprCenter}
-          mprBasis={mprBasis}
-          windowCenter={windowCenter}
-          windowWidth={windowWidth}
-          onCenterChange={setMprCenter}
-          onBasisChange={setMprBasis}
-          zoom={zoom}
-          onZoomChange={setZoom}
-        />
+        {/* QLAB order: A green | B red / C blue | 3D */}
         <MPRSlicePane
           axis="coronal"
           volume={volume}
@@ -792,20 +748,24 @@ const MPRViewer = () => {
           zoom={zoom}
           onZoomChange={setZoom}
         />
-        <Pane>
-          <PaneLabel $color="#3d9a8b">3D Volume</PaneLabel>
+        <MPRSlicePane
+          axis="axial"
+          volume={volume}
+          timeIndex={timeIndex}
+          mprCenter={mprCenter}
+          mprBasis={mprBasis}
+          windowCenter={windowCenter}
+          windowWidth={windowWidth}
+          onCenterChange={setMprCenter}
+          onBasisChange={setMprBasis}
+          zoom={zoom}
+          onZoomChange={setZoom}
+        />
+        <Pane $borderColor={qlab.volumeBorder}>
+          <PaneLabel $color={qlab.amberBright}>3D</PaneLabel>
           <Canvas
             camera={{ position: [1.6, 1.2, 1.6], fov: 45 }}
-            style={{
-              width: '100%',
-              height: '100%',
-              background:
-                colorStyle === 'philips'
-                  ? '#0a0706'
-                  : colorStyle === 'glass'
-                    ? '#061018'
-                    : '#05070a',
-            }}
+            style={{ width: '100%', height: '100%', background: '#000' }}
             gl={{ antialias: true }}
           >
             <VolumeRenderer
@@ -825,6 +785,53 @@ const MPRViewer = () => {
           </Canvas>
         </Pane>
       </Grid>
+
+      <PlaybackBar>
+        <Button
+          onClick={() => {
+            setPlaying(false);
+            setTimeIndex(0);
+          }}
+          disabled={volume.dims.t <= 1}
+          title="First frame"
+        >
+          <SkipBack size={14} />
+        </Button>
+        <Button
+          onClick={() => setPlaying((p) => !p)}
+          disabled={volume.dims.t <= 1}
+          title="Play / pause"
+          $active={playing}
+        >
+          {playing ? <Pause size={14} /> : <Play size={14} />}
+        </Button>
+        <Button
+          onClick={() => {
+            setPlaying(false);
+            setTimeIndex(volume.dims.t - 1);
+          }}
+          disabled={volume.dims.t <= 1}
+          title="Last frame"
+        >
+          <SkipForward size={14} />
+        </Button>
+        <FrameInfo>
+          {timeIndex + 1}/{volume.dims.t}
+        </FrameInfo>
+        <Timeline
+          type="range"
+          min={0}
+          max={Math.max(0, volume.dims.t - 1)}
+          value={timeIndex}
+          onChange={(e) => {
+            setPlaying(false);
+            setTimeIndex(Number(e.target.value));
+          }}
+        />
+        <PlayMeta>
+          {tSec}s · {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×{sizeMm.z.toFixed(0)} mm
+        </PlayMeta>
+      </PlaybackBar>
     </Container>
   );
 };

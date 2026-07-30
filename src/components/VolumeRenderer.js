@@ -79,23 +79,18 @@ vec3 philipsColor(float t) {
 }
 
 /**
- * Philips EPIQ-like glass:
- * - front/lit tissue: peach-copper
- * - depth / shadow / cavities: translucent blue you can see through
- * - very low per-sample alpha so openings stay see-through
+ * QLAB 3DQ glass: amber / sepia tissue, translucent depth (see-through).
  */
 vec3 glassColor(float intensity, float ndotl, float fresnel, float depthFog) {
-  vec3 peach = vec3(0.95, 0.58, 0.38);
-  vec3 copper = vec3(0.85, 0.40, 0.22);
-  vec3 blueHi = vec3(0.35, 0.62, 0.95);
-  vec3 blueLo = vec3(0.08, 0.22, 0.55);
+  vec3 cream = vec3(0.98, 0.90, 0.62);
+  vec3 amber = vec3(0.90, 0.62, 0.22);
+  vec3 brown = vec3(0.42, 0.22, 0.08);
+  vec3 deep = vec3(0.12, 0.08, 0.04);
 
-  float lit = smoothstep(0.08, 0.65, ndotl);
-  vec3 warm = mix(copper, peach, clamp(intensity, 0.0, 1.0));
-  vec3 cool = mix(blueLo, blueHi, clamp(intensity * 0.9 + fresnel * 0.35, 0.0, 1.0));
-
-  // Deeper along the ray → more blue glass
-  float frontness = (1.0 - depthFog) * lit;
+  float lit = smoothstep(0.08, 0.7, ndotl);
+  vec3 warm = mix(amber, cream, clamp(intensity * 0.85 + fresnel * 0.2, 0.0, 1.0));
+  vec3 cool = mix(deep, brown, clamp(intensity, 0.0, 1.0));
+  float frontness = mix(0.25, 1.0, (1.0 - depthFog * 0.75) * lit);
   return mix(cool, warm, frontness);
 }
 
