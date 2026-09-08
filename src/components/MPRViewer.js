@@ -13,7 +13,7 @@ import {
   viewSpec,
 } from '../utils/mprGeometry';
 import { exportToNRRD } from '../utils/dicomParser';
-import VolumeRenderer from './VolumeRenderer';
+import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
 
 const Container = styled.div`
   height: 100%;
@@ -515,13 +515,13 @@ const MPRViewer = () => {
   } = useEcho();
 
   const [playing, setPlaying] = useState(false);
-  const [opacity, setOpacity] = useState(0.5);
+  const [opacity, setOpacity] = useState(0.72);
   const [renderMode, setRenderMode] = useState('dvr');
   const [colorStyle, setColorStyle] = useState('glass');
   const [useCutPlanes, setUseCutPlanes] = useState(false);
-  const [lightAzimuth, setLightAzimuth] = useState(30);
-  const [lightElevation, setLightElevation] = useState(48);
-  const [lightIntensity, setLightIntensity] = useState(1.35);
+  const [lightAzimuth, setLightAzimuth] = useState(38);
+  const [lightElevation, setLightElevation] = useState(42);
+  const [lightIntensity, setLightIntensity] = useState(1.55);
   const [zoom, setZoom] = useState(1.5);
   const timeRef = useRef(timeIndex);
   timeRef.current = timeIndex;
@@ -669,8 +669,9 @@ const MPRViewer = () => {
               const next = e.target.value;
               setColorStyle(next);
               if (next === 'philips' || next === 'glass') setRenderMode('dvr');
-              if (next === 'glass') setOpacity(0.5);
-              if (next === 'philips') setOpacity(0.9);
+              if (next === 'glass') setOpacity(0.72);
+              if (next === 'philips') setOpacity(0.92);
+              if (next === 'gray') setOpacity(0.8);
             }}
             title="Volume color style"
           >
@@ -795,18 +796,21 @@ const MPRViewer = () => {
         <Pane>
           <PaneLabel $color="#3d9a8b">3D Volume</PaneLabel>
           <Canvas
-            camera={{ position: [1.6, 1.2, 1.6], fov: 45 }}
+            flat
+            dpr={[1, 2]}
+            camera={{ position: [1.15, 0.82, 1.25], fov: 32, near: 0.05, far: 30 }}
             style={{
               width: '100%',
               height: '100%',
-              background:
-                colorStyle === 'philips'
-                  ? '#0a0706'
-                  : colorStyle === 'glass'
-                    ? '#061018'
-                    : '#05070a',
+              background: STYLE_BG[colorStyle] || STYLE_BG.glass,
             }}
-            gl={{ antialias: true }}
+            gl={{
+              antialias: true,
+              alpha: false,
+              powerPreference: 'high-performance',
+              stencil: false,
+              preserveDrawingBuffer: false,
+            }}
           >
             <VolumeRenderer
               volume={volume}
