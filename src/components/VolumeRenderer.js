@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { getVolumeAtTime, physicalSizeMm } from '../utils/philipsVolume';
+import { cross as cross3, normalize as normalize3 } from '../utils/mprGeometry';
 
 const vertexShader = /* glsl */ `
 out vec3 vOrigin;
@@ -291,6 +292,191 @@ const STYLE_BG_VEC = {
   gray: new THREE.Color('#05070a'),
 };
 
+const MPR_PLANE_COLORS = {
+  x: '#e53935',
+  y: '#43a047',
+  z: '#1e88e5',
+};
+
+const UNIT_BOX_CORNERS = [
+  [-0.5, -0.5, -0.5],
+  [0.5, -0.5, -0.5],
+  [0.5, 0.5, -0.5],
+  [-0.5, 0.5, -0.5],
+  [-0.5, -0.5, 0.5],
+  [0.5, -0.5, 0.5],
+  [0.5, 0.5, 0.5],
+  [-0.5, 0.5, 0.5],
+];
+
+const UNIT_BOX_EDGES = [
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 0],
+  [4, 5],
+  [5, 6],
+  [6, 7],
+  [7, 4],
+  [0, 4],
+  [1, 5],
+  [2, 6],
+  [3, 7],
+];
+
+function clipPlaneToUnitBox(origin, normal) {
+  const hits = [];
+  const eps = 1e-5;
+  for (const [i0, i1] of UNIT_BOX_EDGES) {
+    const a = UNIT_BOX_CORNERS[i0];
+    const b = UNIT_BOX_CORNERS[i1];
+    const da =
+      (a[0] - origin.x) * normal.x +
+      (a[1] - origin.y) * normal.y +
+      (a[2] - origin.z) * normal.z;
+    const db =
+      (b[0] - origin.x) * normal.x +
+      (b[1] - origin.y) * normal.y +
+      (b[2] - origin.z) * normal.z;
+    if (da * db > eps) continue;
+    const denom = da - db;
+    if (Math.abs(denom) < 1e-8) continue;
+    const t = da / denom;
+    if (t < -eps || t > 1 + eps) continue;
+    hits.push([
+      a[0] + (b[0] - a[0]) * t,
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+    ]);
+  }
+
+  const uniq = [];
+  for (const p of hits) {
+    if (
+      !uniq.some(
+        (q) => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) < 1.5e-3
+      )
+    ) {
+      uniq.push(p);
+    }
+  }
+  if (uniq.length < 3) return [];
+
+  const c = uniq
+    .reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0])
+    .map((v) => v / uniq.length);
+  const n = [normal.x, normal.y, normal.z];
+  const tmp = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const u = normalize3(cross3(n, tmp));
+  const v = normalize3(cross3(n, u));
+  uniq.sort((a, b) => {
+    const angA = Math.atan2(
+      (a[0] - c[0]) * v[0] + (a[1] - c[1]) * v[1] + (a[2] - c[2]) * v[2],
+      (a[0] - c[0]) * u[0] + (a[1] - c[1]) * u[1] + (a[2] - c[2]) * u[2]
+    );
+    const angB = Math.atan2(
+      (b[0] - c[0]) * v[0] + (b[1] - c[1]) * v[1] + (b[2] - c[2]) * v[2],
+      (b[0] - c[0]) * u[0] + (b[1] - c[1]) * u[1] + (b[2] - c[2]) * u[2]
+    );
+    return angA - angB;
+  });
+  return uniq;
+}
+
+function MprPlaneOverlay({ points, color }) {
+  const fillGeom = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    if (!points || points.length < 3) return g;
+    const c = points
+      .reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0])
+      .map((v) => v / points.length);
+    const verts = [];
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      verts.push(c[0], c[1], c[2], a[0], a[1], a[2], b[0], b[1], b[2]);
+    }
+    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    g.computeVertexNormals();
+    return g;
+  }, [points]);
+
+  useEffect(() => () => fillGeom.dispose(), [fillGeom]);
+
+  if (!points || points.length < 3) return null;
+  const loop = [...points, points[0]];
+
+  return (
+    <group>
+      <mesh geometry={fillGeom} renderOrder={2}>
+        <meshBasicMaterial
+          color={color}
+          transparent
+          opacity={0.13}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+      <Line
+        points={loop}
+        color={color}
+        lineWidth={2.4}
+        renderOrder={3}
+        depthTest
+        transparent
+        opacity={0.95}
+      />
+    </group>
+  );
+}
+
+function MprPlanes({ volume, mprCenter, mprBasis }) {
+  const sizeMm = useMemo(() => physicalSizeMm(volume), [volume]);
+  const dims = volume.dims;
+
+  const origin = useMemo(
+    () =>
+      new THREE.Vector3(
+        (mprCenter.x + 0.5) / dims.x - 0.5,
+        (mprCenter.y + 0.5) / dims.y - 0.5,
+        (mprCenter.z + 0.5) / dims.z - 0.5
+      ),
+    [mprCenter, dims]
+  );
+
+  const planes = useMemo(
+    () =>
+      ['x', 'y', 'z'].map((key) => {
+        const nMm = mprBasis[key];
+        const normal = new THREE.Vector3(
+          nMm[0] / Math.max(sizeMm.x, 1e-6),
+          nMm[1] / Math.max(sizeMm.y, 1e-6),
+          nMm[2] / Math.max(sizeMm.z, 1e-6)
+        );
+        if (normal.lengthSq() < 1e-10) return { key, color: MPR_PLANE_COLORS[key], points: [] };
+        normal.normalize();
+        return {
+          key,
+          color: MPR_PLANE_COLORS[key],
+          points: clipPlaneToUnitBox(origin, normal),
+        };
+      }),
+    [mprBasis, origin, sizeMm]
+  );
+
+  return (
+    <group>
+      {planes.map((p) => (
+        <MprPlaneOverlay key={p.key} points={p.points} color={p.color} />
+      ))}
+      <mesh position={origin} renderOrder={4}>
+        <sphereGeometry args={[0.016, 16, 16]} />
+        <meshBasicMaterial color="#ffffff" />
+      </mesh>
+    </group>
+  );
+}
+
 function VolumeFrame({ useCutPlanes, cutPlane }) {
   const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
   const edges = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
@@ -330,6 +516,9 @@ function VolumeMesh({
   lightElevation,
   lightIntensity,
   interactive,
+  showMprLines,
+  mprCenter,
+  mprBasis,
 }) {
   const materialRef = useRef();
   const { gl, size } = useThree();
@@ -509,6 +698,13 @@ function VolumeMesh({
         />
       </mesh>
       <VolumeFrame useCutPlanes={useCutPlanes} cutPlane={cutPlane} />
+      {showMprLines && mprCenter && mprBasis && (
+        <MprPlanes
+          volume={volume}
+          mprCenter={mprCenter}
+          mprBasis={mprBasis}
+        />
+      )}
       <axesHelper args={[0.16]} position={[-0.46, -0.46, -0.46]} />
       <mesh position={lightPos}>
         <sphereGeometry args={[0.028, 16, 16]} />
@@ -531,6 +727,9 @@ const VolumeRenderer = ({
   lightAzimuth = 30,
   lightElevation = 48,
   lightIntensity = 1.35,
+  showMprLines = false,
+  mprCenter,
+  mprBasis,
 }) => {
   const [interactive, setInteractive] = useState(false);
 
@@ -552,6 +751,9 @@ const VolumeRenderer = ({
         lightElevation={lightElevation}
         lightIntensity={lightIntensity}
         interactive={interactive}
+        showMprLines={showMprLines}
+        mprCenter={mprCenter}
+        mprBasis={mprBasis}
       />
       <OrbitControls
         makeDefault

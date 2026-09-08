@@ -519,6 +519,7 @@ const MPRViewer = () => {
   const [renderMode, setRenderMode] = useState('dvr');
   const [colorStyle, setColorStyle] = useState('glass');
   const [useCutPlanes, setUseCutPlanes] = useState(false);
+  const [showMprLines, setShowMprLines] = useState(true);
   const [lightAzimuth, setLightAzimuth] = useState(38);
   const [lightElevation, setLightElevation] = useState(42);
   const [lightIntensity, setLightIntensity] = useState(1.55);
@@ -740,6 +741,13 @@ const MPRViewer = () => {
           >
             {useCutPlanes ? 'Cuts on' : 'Cuts off'}
           </Button>
+          <Button
+            $active={showMprLines}
+            onClick={() => setShowMprLines((v) => !v)}
+            title="Show MPR planes on the 3D volume"
+          >
+            {showMprLines ? 'MPR lines on' : 'MPR lines off'}
+          </Button>
           <Button onClick={exportFrame}>
             <Download size={16} />
             NRRD
@@ -822,6 +830,9 @@ const MPRViewer = () => {
               colorStyle={colorStyle}
               crosshair={crosshair}
               useCutPlanes={useCutPlanes}
+              showMprLines={showMprLines}
+              mprCenter={mprCenter}
+              mprBasis={mprBasis}
               lightAzimuth={lightAzimuth}
               lightElevation={lightElevation}
               lightIntensity={lightIntensity}
