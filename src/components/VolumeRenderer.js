@@ -3,12 +3,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { getVolumeAtTime, physicalSizeMm } from '../utils/philipsVolume';
-import {
-  cross as cross3,
-  mmToUnitBox,
-  normalize as normalize3,
-  voxelToMm,
-} from '../utils/mprGeometry';
+import { mmToUnitBox, voxelToMm } from '../utils/mprGeometry';
 
 const vertexShader = /* glsl */ `
 out vec3 vOrigin;
@@ -152,7 +147,6 @@ void main() {
   float glassOpacity = clamp(opacity, 0.18, 1.0);
   float solidScale = opacity * (colorStyle == 1 ? 0.28 : 0.18);
   float localThreshold = colorStyle == 2 ? 0.06 : max(threshold, 0.04);
-  bool firstHit = true;
 
   for (float i = 0.0; i < 512.0; i++) {
     if (i >= steps) break;
@@ -187,16 +181,6 @@ void main() {
           float depthFog = clamp((distance(p, vOrigin) - bounds.x) / rayLen, 0.0, 1.0);
           float surface = smoothstep(0.018, 0.14, gLen);
           vec3 beer = transillumination(p, toLight);
-
-          if (firstHit && useCutPlanes) {
-            vec3 sliceCol = colorStyle == 0
-              ? vec3(intensity)
-              : (colorStyle == 1 ? philipsHeat(intensity) : mix(vec3(0.18, 0.38, 0.72), vec3(0.96, 0.70, 0.48), intensity));
-            float sa = clamp(intensity * 0.62, 0.0, 0.72);
-            ac.rgb += (1.0 - ac.a) * sa * sliceCol * (0.55 + 0.45 * ndotl);
-            ac.a += (1.0 - ac.a) * sa;
-          }
-          firstHit = false;
 
           if (colorStyle == 2) {
             vec3 peach = vec3(1.00, 0.78, 0.56);
@@ -313,136 +297,31 @@ const MPR_PLANE_COLORS = {
   z: '#1e88e5',
 };
 
-const UNIT_BOX_CORNERS = [
-  [-0.5, -0.5, -0.5],
-  [0.5, -0.5, -0.5],
-  [0.5, 0.5, -0.5],
-  [-0.5, 0.5, -0.5],
-  [-0.5, -0.5, 0.5],
-  [0.5, -0.5, 0.5],
-  [0.5, 0.5, 0.5],
-  [-0.5, 0.5, 0.5],
-];
-
-const UNIT_BOX_EDGES = [
-  [0, 1],
-  [1, 2],
-  [2, 3],
-  [3, 0],
-  [4, 5],
-  [5, 6],
-  [6, 7],
-  [7, 4],
-  [0, 4],
-  [1, 5],
-  [2, 6],
-  [3, 7],
-];
-
-function clipPlaneToUnitBox(origin, normal) {
-  const hits = [];
-  const eps = 1e-5;
-  for (const [i0, i1] of UNIT_BOX_EDGES) {
-    const a = UNIT_BOX_CORNERS[i0];
-    const b = UNIT_BOX_CORNERS[i1];
-    const da =
-      (a[0] - origin.x) * normal.x +
-      (a[1] - origin.y) * normal.y +
-      (a[2] - origin.z) * normal.z;
-    const db =
-      (b[0] - origin.x) * normal.x +
-      (b[1] - origin.y) * normal.y +
-      (b[2] - origin.z) * normal.z;
-    if (da * db > eps) continue;
-    const denom = da - db;
-    if (Math.abs(denom) < 1e-8) continue;
-    const t = da / denom;
-    if (t < -eps || t > 1 + eps) continue;
-    hits.push([
-      a[0] + (b[0] - a[0]) * t,
-      a[1] + (b[1] - a[1]) * t,
-      a[2] + (b[2] - a[2]) * t,
-    ]);
-  }
-
-  const uniq = [];
-  for (const p of hits) {
-    if (
-      !uniq.some(
-        (q) => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) < 1.5e-3
-      )
-    ) {
-      uniq.push(p);
+function clipLineToUnitBox(origin, dir) {
+  const o = [origin.x, origin.y, origin.z];
+  const d = [dir.x, dir.y, dir.z];
+  let tmin = -1e4;
+  let tmax = 1e4;
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(d[i]) < 1e-8) {
+      if (o[i] < -0.505 || o[i] > 0.505) return null;
+      continue;
     }
-  }
-  if (uniq.length < 3) return [];
-
-  const c = uniq
-    .reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0])
-    .map((v) => v / uniq.length);
-  const n = [normal.x, normal.y, normal.z];
-  const tmp = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-  const u = normalize3(cross3(n, tmp));
-  const v = normalize3(cross3(n, u));
-  uniq.sort((a, b) => {
-    const angA = Math.atan2(
-      (a[0] - c[0]) * v[0] + (a[1] - c[1]) * v[1] + (a[2] - c[2]) * v[2],
-      (a[0] - c[0]) * u[0] + (a[1] - c[1]) * u[1] + (a[2] - c[2]) * u[2]
-    );
-    const angB = Math.atan2(
-      (b[0] - c[0]) * v[0] + (b[1] - c[1]) * v[1] + (b[2] - c[2]) * v[2],
-      (b[0] - c[0]) * u[0] + (b[1] - c[1]) * u[1] + (b[2] - c[2]) * u[2]
-    );
-    return angA - angB;
-  });
-  return uniq;
-}
-
-function MprPlaneOverlay({ points, color, emphasis }) {
-  const fillGeom = useMemo(() => {
-    const g = new THREE.BufferGeometry();
-    if (!points || points.length < 3) return g;
-    const c = points
-      .reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0])
-      .map((v) => v / points.length);
-    const verts = [];
-    for (let i = 0; i < points.length; i++) {
-      const a = points[i];
-      const b = points[(i + 1) % points.length];
-      verts.push(c[0], c[1], c[2], a[0], a[1], a[2], b[0], b[1], b[2]);
+    let t0 = (-0.5 - o[i]) / d[i];
+    let t1 = (0.5 - o[i]) / d[i];
+    if (t0 > t1) {
+      const tmp = t0;
+      t0 = t1;
+      t1 = tmp;
     }
-    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    g.computeVertexNormals();
-    return g;
-  }, [points]);
-
-  useEffect(() => () => fillGeom.dispose(), [fillGeom]);
-
-  if (!points || points.length < 3) return null;
-  const loop = [...points, points[0]];
-
-  return (
-    <group>
-      <mesh geometry={fillGeom} renderOrder={2}>
-        <meshBasicMaterial
-          color={color}
-          transparent
-          opacity={emphasis ? 0.22 : 0.13}
-          side={THREE.DoubleSide}
-          depthWrite={false}
-        />
-      </mesh>
-      <Line
-        points={loop}
-        color={color}
-        lineWidth={emphasis ? 3.2 : 2.4}
-        renderOrder={3}
-        depthTest
-        transparent
-        opacity={0.95}
-      />
-    </group>
-  );
+    tmin = Math.max(tmin, t0);
+    tmax = Math.min(tmax, t1);
+  }
+  if (tmax - tmin < 1e-4) return null;
+  return [
+    [o[0] + d[0] * tmin, o[1] + d[1] * tmin, o[2] + d[2] * tmin],
+    [o[0] + d[0] * tmax, o[1] + d[1] * tmax, o[2] + d[2] * tmax],
+  ];
 }
 
 function MprPlanes({ volume, mprCenter, mprBasis, cropPlaneKey }) {
@@ -459,21 +338,23 @@ function MprPlanes({ volume, mprCenter, mprBasis, cropPlaneKey }) {
     [mprCenter, dims]
   );
 
-  const planes = useMemo(
+  const axes = useMemo(
     () =>
       ['x', 'y', 'z'].map((key) => {
         const nMm = mprBasis[key];
-        const normal = new THREE.Vector3(
+        const dir = new THREE.Vector3(
           nMm[0] / Math.max(sizeMm.x, 1e-6),
           nMm[1] / Math.max(sizeMm.y, 1e-6),
           nMm[2] / Math.max(sizeMm.z, 1e-6)
         );
-        if (normal.lengthSq() < 1e-10) return { key, color: MPR_PLANE_COLORS[key], points: [] };
-        normal.normalize();
+        if (dir.lengthSq() < 1e-10) {
+          return { key, color: MPR_PLANE_COLORS[key], points: [] };
+        }
+        dir.normalize();
         return {
           key,
           color: MPR_PLANE_COLORS[key],
-          points: clipPlaneToUnitBox(origin, normal),
+          points: clipLineToUnitBox(origin, dir) || [],
         };
       }),
     [mprBasis, origin, sizeMm]
@@ -481,14 +362,20 @@ function MprPlanes({ volume, mprCenter, mprBasis, cropPlaneKey }) {
 
   return (
     <group>
-      {planes.map((p) => (
-        <MprPlaneOverlay
-          key={p.key}
-          points={p.points}
-          color={p.color}
-          emphasis={cropPlaneKey === p.key}
-        />
-      ))}
+      {axes.map((a) =>
+        a.points.length === 2 ? (
+          <Line
+            key={a.key}
+            points={a.points}
+            color={a.color}
+            lineWidth={cropPlaneKey === a.key ? 2.4 : 1.6}
+            renderOrder={4}
+            depthTest={false}
+            transparent
+            opacity={0.9}
+          />
+        ) : null
+      )}
     </group>
   );
 }
