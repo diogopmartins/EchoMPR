@@ -12,6 +12,10 @@ import {
   nudgeCenterAlongNormal,
   projectPointOntoPlane,
   viewSpec,
+  imageToWorldMm,
+  worldMmToImage,
+  distanceMm,
+  polygonAreaMm2,
 } from '../utils/mprGeometry';
 import { exportToNRRD } from '../utils/dicomParser';
 import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
@@ -187,6 +191,74 @@ function drawTiltedLine(ctx, cx, cy, dirU, dirV, halfLen, color) {
   ctx.stroke();
 }
 
+function imageToCss(slice, imgU, imgV, dw, dh) {
+  return {
+    x: (imgU / Math.max(1, slice.width - 1)) * dw,
+    y: (imgV / Math.max(1, slice.height - 1)) * dh,
+  };
+}
+
+function cssToImage(slice, x, y, dw, dh) {
+  return {
+    imgU: (x / dw) * (slice.width - 1),
+    imgV: (y / dh) * (slice.height - 1),
+  };
+}
+
+/** Keep rotate handles on-screen along a line through the crosshair. */
+function handleReach(cx, cy, u, v, dw, dh) {
+  const preferred = Math.min(dw, dh) * 0.4;
+  const pad = 18;
+  const hits = [preferred];
+  if (u > 1e-6) hits.push((dw - pad - cx) / u);
+  if (u < -1e-6) hits.push((pad - cx) / u);
+  if (v > 1e-6) hits.push((dh - pad - cy) / v);
+  if (v < -1e-6) hits.push((pad - cy) / v);
+  const ok = hits.filter((t) => t > 14);
+  return ok.length ? Math.min(...ok) : preferred;
+}
+
+function lineHandlesCss(cx, cy, dirU, dirV, dw, dh) {
+  const len = Math.hypot(dirU, dirV) || 1;
+  const u = dirU / len;
+  const v = dirV / len;
+  const r1 = handleReach(cx, cy, u, v, dw, dh);
+  const r2 = handleReach(cx, cy, -u, -v, dw, dh);
+  return [
+    { x: cx + u * r1, y: cy + v * r1 },
+    { x: cx - u * r2, y: cy - v * r2 },
+  ];
+}
+
+function formatDistance(mm) {
+  if (mm < 10) return `${mm.toFixed(1)} mm`;
+  return `${(mm / 10).toFixed(2)} cm`;
+}
+
+function formatArea(mm2) {
+  return `${(mm2 / 100).toFixed(2)} cm²`;
+}
+
+function drawMeasureLabel(ctx, x, y, text) {
+  ctx.font = '600 11px "IBM Plex Sans", "Segoe UI", sans-serif';
+  const padX = 5;
+  const w = ctx.measureText(text).width + padX * 2;
+  const h = 16;
+  const lx = Math.max(4, x - w / 2);
+  const ly = y - 20;
+  ctx.fillStyle = 'rgba(8, 12, 16, 0.78)';
+  ctx.strokeStyle = 'rgba(255, 214, 90, 0.85)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') ctx.roundRect(lx, ly, w, h, 3);
+  else ctx.rect(lx, ly, w, h);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#ffe082';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, lx + padX, ly + h / 2);
+}
+
 function MPRSlicePane({
   axis,
   volume,
@@ -200,6 +272,10 @@ function MPRSlicePane({
   zoom,
   onZoomChange,
   viewEpoch,
+  tool,
+  measurements,
+  onAddMeasurement,
+  onClearDraftSignal,
 }) {
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
@@ -208,12 +284,19 @@ function MPRSlicePane({
   const dragRef = useRef(null);
   const viewOriginRef = useRef(null);
   const [paneSize, setPaneSize] = useState({ w: 512, h: 512 });
+  const [draft, setDraft] = useState(null);
   const basisRef = useRef(mprBasis);
   basisRef.current = mprBasis;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
   useEffect(() => {
     viewOriginRef.current = { ...mprCenter };
   }, [viewEpoch, volume]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setDraft(null);
+  }, [tool, onClearDraftSignal]);
 
   const resolveViewOrigin = useCallback(() => {
     const spec = viewSpec(axis);
@@ -264,32 +347,33 @@ function MPRSlicePane({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, rect.width, rect.height);
 
-      const cx = ox + ((s.crossU ?? (sw - 1) / 2) / Math.max(1, sw - 1)) * dw;
-      const cy = oy + ((s.crossV ?? (sh - 1) / 2) / Math.max(1, sh - 1)) * dh;
+      const toCss = (imgU, imgV) => {
+        const p = imageToCss(s, imgU, imgV, dw, dh);
+        return { x: ox + p.x, y: oy + p.y };
+      };
+
+      const cx = toCss(s.crossU ?? (sw - 1) / 2, s.crossV ?? (sh - 1) / 2).x;
+      const cy = toCss(s.crossU ?? (sw - 1) / 2, s.crossV ?? (sh - 1) / 2).y;
       const half = Math.hypot(dw, dh);
 
       drawTiltedLine(ctx, cx, cy, s.dirs.a.u, s.dirs.a.v, half, s.dirs.a.color);
       drawTiltedLine(ctx, cx, cy, s.dirs.b.u, s.dirs.b.v, half, s.dirs.b.color);
 
-      const drawHandle = (dir, color) => {
-        const len = Math.hypot(dir.u, dir.v) || 1;
-        const u = dir.u / len;
-        const v = dir.v / len;
-        const reach = Math.min(dw, dh) * 0.42;
-        ctx.fillStyle = color;
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(cx + u * reach, cy + v * reach, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(cx - u * reach, cy - v * reach, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      };
-      drawHandle(s.dirs.a, s.dirs.a.color);
-      drawHandle(s.dirs.b, s.dirs.b.color);
+      if (tool === 'navigate') {
+        const drawHandle = (dir, color) => {
+          for (const h of lineHandlesCss(cx, cy, dir.u, dir.v, dw, dh)) {
+            ctx.fillStyle = color;
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(h.x, h.y, 7, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+        };
+        drawHandle(s.dirs.a, s.dirs.a.color);
+        drawHandle(s.dirs.b, s.dirs.b.color);
+      }
 
       ctx.fillStyle = '#fff';
       ctx.strokeStyle = AXIS_META[axis].color;
@@ -298,9 +382,100 @@ function MPRSlicePane({
       ctx.arc(cx, cy, 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+
+      const drawPts = (points, cursor) => {
+        const all = cursor ? [...points, cursor] : points;
+        return all.map((mm) => {
+          const im = worldMmToImage(volume, s, mm);
+          return toCss(im.u, im.v);
+        });
+      };
+
+      const drawDistance = (points, cursor, live) => {
+        const pts = drawPts(points, cursor);
+        if (pts.length < 1) return;
+        ctx.strokeStyle = live ? '#ffe082' : '#ffd54f';
+        ctx.fillStyle = '#ffd54f';
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash(live ? [5, 4] : []);
+        if (pts.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          ctx.lineTo(pts[1].x, pts[1].y);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        pts.forEach((p) => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#111';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        });
+        const mmPts = cursor ? [...points, cursor] : points;
+        if (mmPts.length >= 2) {
+          const mid = {
+            x: (pts[0].x + pts[1].x) / 2,
+            y: (pts[0].y + pts[1].y) / 2,
+          };
+          drawMeasureLabel(ctx, mid.x, mid.y, formatDistance(distanceMm(mmPts[0], mmPts[1])));
+        }
+      };
+
+      const drawArea = (points, cursor, live) => {
+        const mmPts = cursor ? [...points, cursor] : points;
+        const pts = drawPts(points, cursor);
+        if (!pts.length) return;
+        ctx.fillStyle = live ? 'rgba(255, 213, 79, 0.16)' : 'rgba(255, 213, 79, 0.22)';
+        ctx.strokeStyle = '#ffd54f';
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash(live ? [5, 4] : []);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
+        if (!live && pts.length >= 3) ctx.closePath();
+        if (pts.length >= 3) ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+        pts.forEach((p) => {
+          ctx.fillStyle = '#ffd54f';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#111';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        });
+        if (mmPts.length >= 3) {
+          const cxp = pts.reduce((s2, p) => s2 + p.x, 0) / pts.length;
+          const cyp = pts.reduce((s2, p) => s2 + p.y, 0) / pts.length;
+          drawMeasureLabel(
+            ctx,
+            cxp,
+            cyp,
+            formatArea(polygonAreaMm2(mmPts, s.right, s.down))
+          );
+        }
+      };
+
+      measurements
+        .filter((m) => m.axis === axis)
+        .forEach((m) => {
+          if (m.type === 'distance') drawDistance(m.points);
+          else drawArea(m.points);
+        });
+
+      if (draft && draft.axis === axis) {
+        if (draft.type === 'distance') drawDistance(draft.points, draft.cursor, true);
+        else drawArea(draft.points, draft.cursor, true);
+      }
     },
-    [axis]
+    [axis, draft, measurements, tool, volume]
   );
+
+  const drawOverlayRef = useRef(drawOverlay);
+  drawOverlayRef.current = drawOverlay;
 
   const redraw = useCallback(() => {
     if (!volume || !canvasRef.current) return;
@@ -319,7 +494,7 @@ function MPRSlicePane({
     );
     sliceRef.current = slice;
     renderSliceToCanvas(canvasRef.current, slice, windowCenter, windowWidth);
-    drawOverlay(slice);
+    drawOverlayRef.current(slice);
   }, [
     volume,
     timeIndex,
@@ -328,7 +503,6 @@ function MPRSlicePane({
     axis,
     windowCenter,
     windowWidth,
-    drawOverlay,
     paneSize.w,
     paneSize.h,
     zoom,
@@ -340,13 +514,17 @@ function MPRSlicePane({
   }, [redraw]);
 
   useEffect(() => {
+    drawOverlay(sliceRef.current);
+  }, [drawOverlay]);
+
+  useEffect(() => {
     const onResize = () => drawOverlay(sliceRef.current);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [drawOverlay]);
 
   useEffect(() => {
-    const el = canvasRef.current;
+    const el = overlayRef.current;
     if (!el) return undefined;
     const onWheelNative = (e) => {
       e.preventDefault();
@@ -371,51 +549,47 @@ function MPRSlicePane({
     return () => el.removeEventListener('wheel', onWheelNative);
   }, [axis, mprBasis, mprCenter, onCenterChange, onZoomChange, volume, zoom]);
 
-  const clientToImage = (clientX, clientY) => {
+  const pointerCss = (clientX, clientY, { clamp = true } = {}) => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return null;
-    const { rect, dw, dh, ox, oy, sw, sh } = getViewLayout(container, canvas);
-    const lx = (clientX - rect.left - ox) / dw;
-    const ly = (clientY - rect.top - oy) / dh;
-    if (lx < -0.02 || lx > 1.02 || ly < -0.02 || ly > 1.02) return null;
     const slice = sliceRef.current;
+    if (!canvas || !container || !slice) return null;
+    const { rect, dw, dh, ox, oy } = getViewLayout(container, canvas);
+    let x = clientX - rect.left - ox;
+    let y = clientY - rect.top - oy;
+    if (clamp) {
+      if (x < -8 || x > dw + 8 || y < -8 || y > dh + 8) return null;
+    }
+    const img = cssToImage(slice, x, y, dw, dh);
     return {
-      imgU: lx * (sw - 1),
-      imgV: ly * (sh - 1),
-      nx: lx * 2 - 1,
-      ny: ly * 2 - 1,
-      cx: slice?.crossU ?? 0.5 * (sw - 1),
-      cy: slice?.crossV ?? 0.5 * (sh - 1),
-      screenDist: Math.hypot(
-        clientX - (rect.left + ox + dw / 2),
-        clientY - (rect.top + oy + dh / 2)
-      ),
+      x,
+      y,
+      dw,
+      dh,
+      imgU: img.imgU,
+      imgV: img.imgV,
+      cx: imageToCss(slice, slice.crossU, slice.crossV, dw, dh).x,
+      cy: imageToCss(slice, slice.crossU, slice.crossV, dw, dh).y,
     };
   };
 
-  const hitTestMode = (img) => {
+  const hitTestMode = (pos) => {
     const slice = sliceRef.current;
-    if (!slice) return { mode: 'move' };
-    const dx = img.imgU - img.cx;
-    const dy = img.imgV - img.cy;
-    const dist = Math.hypot(dx, dy);
-    const hitTol = Math.max(14, Math.min(slice.width, slice.height) * 0.035);
-    const centerTol = Math.max(12, Math.min(slice.width, slice.height) * 0.03);
-    const handleReach = Math.min(slice.width, slice.height) * 0.42;
-    const handleTol = Math.max(16, Math.min(slice.width, slice.height) * 0.04);
+    if (!slice || !pos) return { mode: 'move' };
+    const { x, y, cx, cy, dw, dh } = pos;
+    const dist = Math.hypot(x - cx, y - cy);
+    const centerTol = 12;
+    const lineTol = 9;
+    const handleTol = 16;
+    const rotateMin = Math.max(52, Math.min(dw, dh) * 0.2);
 
-    const handleHit = (dir) => {
-      const len = Math.hypot(dir.u, dir.v) || 1;
-      const u = dir.u / len;
-      const v = dir.v / len;
-      const d1 = Math.hypot(img.imgU - (img.cx + u * handleReach), img.imgV - (img.cy + v * handleReach));
-      const d2 = Math.hypot(img.imgU - (img.cx - u * handleReach), img.imgV - (img.cy - v * handleReach));
-      return Math.min(d1, d2) < handleTol;
-    };
+    const nearHandle = (dir) =>
+      lineHandlesCss(cx, cy, dir.u, dir.v, dw, dh).some(
+        (h) => Math.hypot(x - h.x, y - h.y) < handleTol
+      );
 
-    if (handleHit(slice.dirs.a) || handleHit(slice.dirs.b)) {
-      const dir = handleHit(slice.dirs.a) ? slice.dirs.a : slice.dirs.b;
+    if (nearHandle(slice.dirs.a) || nearHandle(slice.dirs.b)) {
+      const dir = nearHandle(slice.dirs.a) ? slice.dirs.a : slice.dirs.b;
       return { mode: 'tilt', planeKey: dir.planeKey, dir };
     }
     if (dist < centerTol) return { mode: 'move' };
@@ -424,58 +598,122 @@ function MPRSlicePane({
       const len = Math.hypot(dir.u, dir.v) || 1;
       const u = dir.u / len;
       const v = dir.v / len;
-      return Math.abs(dx * v - dy * u);
+      return Math.abs((x - cx) * v - (y - cy) * u);
     };
     const dA = distToLine(slice.dirs.a);
     const dB = distToLine(slice.dirs.b);
-    const nearA = dA < hitTol;
-    const nearB = dB < hitTol;
-
+    const nearA = dA < lineTol;
+    const nearB = dB < lineTol;
     if (nearA || nearB) {
       const useA = nearA && (!nearB || dA <= dB);
       const dir = useA ? slice.dirs.a : slice.dirs.b;
+      if (dist > rotateMin) {
+        return { mode: 'tilt', planeKey: dir.planeKey, dir };
+      }
       return { mode: 'moveLine', planeKey: dir.planeKey, dir };
     }
     return { mode: 'move' };
   };
 
+  const finishArea = (points) => {
+    if (points.length >= 3) {
+      onAddMeasurement({
+        id: `${axis}-area-${Date.now()}`,
+        axis,
+        type: 'area',
+        points,
+      });
+    }
+    setDraft(null);
+  };
+
   const onPointerDown = (e) => {
-    const img = clientToImage(e.clientX, e.clientY);
-    if (!img) return;
-    const hit = hitTestMode(img);
+    const pos = pointerCss(e.clientX, e.clientY);
+    if (!pos) return;
+    const slice = sliceRef.current;
+    e.currentTarget.setPointerCapture(e.pointerId);
+
+    if (tool !== 'navigate') {
+      const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
+      if (tool === 'distance') {
+        if (!draft || draft.type !== 'distance') {
+          setDraft({ axis, type: 'distance', points: [mm], cursor: mm });
+        } else {
+          onAddMeasurement({
+            id: `${axis}-dist-${Date.now()}`,
+            axis,
+            type: 'distance',
+            points: [draft.points[0], mm],
+          });
+          setDraft(null);
+        }
+        return;
+      }
+      if (tool === 'area') {
+        if (!draft || draft.type !== 'area') {
+          setDraft({ axis, type: 'area', points: [mm], cursor: mm });
+        } else {
+          const first = draft.points[0];
+          const close =
+            draft.points.length >= 3 && distanceMm(first, mm) < (slice.pixelMm || 1) * 14;
+          if (close) finishArea(draft.points);
+          else setDraft({ ...draft, points: [...draft.points, mm], cursor: mm });
+        }
+      }
+      return;
+    }
+
+    const hit = hitTestMode(pos);
     dragRef.current = {
       ...hit,
-      lastU: img.imgU,
-      lastV: img.imgV,
-      lastAngle: Math.atan2(img.imgV - img.cy, img.imgU - img.cx),
+      lastU: pos.imgU,
+      lastV: pos.imgV,
+      angle0: Math.atan2(pos.y - pos.cy, pos.x - pos.cx),
+      basis0: basisRef.current,
     };
-    e.currentTarget.setPointerCapture(e.pointerId);
     e.currentTarget.style.cursor =
-      hit.mode === 'tilt' ? 'grabbing' : hit.mode === 'moveLine' ? 'ns-resize' : 'move';
+      hit.mode === 'tilt' ? 'grabbing' : hit.mode === 'moveLine' ? 'move' : 'move';
   };
 
   const onPointerMove = (e) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    const img = clientToImage(e.clientX, e.clientY);
-    if (!img) return;
+    const pos = pointerCss(e.clientX, e.clientY, { clamp: !dragRef.current });
+    if (!pos) return;
     const slice = sliceRef.current;
 
+    if (tool !== 'navigate') {
+      e.currentTarget.style.cursor = 'crosshair';
+      if (draftRef.current && draftRef.current.axis === axis) {
+        const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
+        setDraft((d) => (d ? { ...d, cursor: mm } : d));
+      }
+      return;
+    }
+
+    const drag = dragRef.current;
+    if (!drag) {
+      const hit = hitTestMode(pos);
+      e.currentTarget.style.cursor =
+        hit.mode === 'tilt' ? 'grab' : hit.mode === 'moveLine' ? 'move' : 'crosshair';
+      return;
+    }
+
     if (drag.mode === 'tilt') {
-      const angle = Math.atan2(img.imgV - img.cy, img.imgU - img.cx);
-      let delta = angle - drag.lastAngle;
+      const angle = Math.atan2(pos.y - pos.cy, pos.x - pos.cx);
+      let delta = angle - drag.angle0;
       if (delta > Math.PI) delta -= 2 * Math.PI;
       if (delta < -Math.PI) delta += 2 * Math.PI;
-      drag.lastAngle = angle;
       const spec = viewSpec(axis);
-      const next = rotateBasisInPlane(basisRef.current, spec.normalKey, delta);
+      const next = rotateBasisInPlane(drag.basis0, spec.normalKey, delta);
       basisRef.current = next;
       onBasisChange(next);
-    } else if (drag.mode === 'moveLine' && drag.dir && drag.planeKey) {
-      const dU = img.imgU - drag.lastU;
-      const dV = img.imgV - drag.lastV;
-      drag.lastU = img.imgU;
-      drag.lastV = img.imgV;
+      return;
+    }
+
+    const dU = pos.imgU - drag.lastU;
+    const dV = pos.imgV - drag.lastV;
+    drag.lastU = pos.imgU;
+    drag.lastV = pos.imgV;
+    if (drag.mode === 'moveLine' && drag.dir && drag.planeKey) {
       onCenterChange(
         movePlaneByLineDrag(
           volume,
@@ -492,10 +730,6 @@ function MPRSlicePane({
         )
       );
     } else {
-      const dU = img.imgU - drag.lastU;
-      const dV = img.imgV - drag.lastV;
-      drag.lastU = img.imgU;
-      drag.lastV = img.imgV;
       onCenterChange(
         translateCenterInPlane(
           volume,
@@ -513,28 +747,51 @@ function MPRSlicePane({
 
   const onPointerUp = (e) => {
     dragRef.current = null;
-    e.currentTarget.style.cursor = 'crosshair';
+    if (tool === 'navigate') e.currentTarget.style.cursor = 'crosshair';
   };
 
+  const onDoubleClick = (e) => {
+    if (tool !== 'area' || !draft || draft.axis !== axis) return;
+    e.preventDefault();
+    finishArea(draft.points);
+  };
+
+  useEffect(() => {
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') setDraft(null);
+      if (ev.key === 'Enter' && draftRef.current?.type === 'area') {
+        finishArea(draftRef.current.points);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [axis]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const planeColor = AXIS_META[axis].color;
+  const hint =
+    tool === 'distance'
+      ? 'Click two points to measure length'
+      : tool === 'area'
+        ? 'Click to add points · Double-click or Enter to close · Esc cancel'
+        : 'Drag a line near the ends to rotate (stays 90°) · Drag the middle to move it · Drag center to move the crosshair · Wheel zoom · Shift+wheel scroll';
 
   return (
     <Pane ref={containerRef} $borderColor={planeColor}>
       <PaneLabel $color={planeColor}>{AXIS_META[axis].label}</PaneLabel>
       <ZoomBadge>{Math.round(zoom * 100)}%</ZoomBadge>
-      <SliceCanvas
-        ref={canvasRef}
+      <SliceCanvas ref={canvasRef} />
+      <canvas
+        ref={overlayRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        title="Drag a line to move it · Drag a handle to rotate (stays 90°) · Drag center to move the crosshair · Wheel zoom · Shift+wheel scroll"
-      />
-      <canvas
-        ref={overlayRef}
+        onDoubleClick={onDoubleClick}
+        title={hint}
         style={{
           position: 'absolute',
           inset: 0,
-          pointerEvents: 'none',
+          zIndex: 1,
+          cursor: 'crosshair',
         }}
       />
     </Pane>
@@ -570,7 +827,16 @@ const MPRViewer = () => {
   const [lightIntensity, setLightIntensity] = useState(1.55);
   const [zoom, setZoom] = useState(1.5);
   const [viewEpoch, setViewEpoch] = useState(0);
+  const [tool, setTool] = useState('navigate');
+  const [measurements, setMeasurements] = useState([]);
+  const [clearDraftSignal, setClearDraftSignal] = useState(0);
   const timeRef = useRef(timeIndex);
+
+  useEffect(() => {
+    setMeasurements([]);
+    setTool('navigate');
+    setClearDraftSignal((n) => n + 1);
+  }, [volume]);
   timeRef.current = timeIndex;
 
   useEffect(() => {
@@ -675,6 +941,37 @@ const MPRViewer = () => {
             title="Reset plane tilt to orthogonal"
           >
             Reset tilt
+          </Button>
+          <Button
+            $active={tool === 'navigate'}
+            onClick={() => setTool('navigate')}
+            title="Move and rotate MPR lines"
+          >
+            Nav
+          </Button>
+          <Button
+            $active={tool === 'distance'}
+            onClick={() => setTool('distance')}
+            title="Measure distance on a 2D slice"
+          >
+            Length
+          </Button>
+          <Button
+            $active={tool === 'area'}
+            onClick={() => setTool('area')}
+            title="Measure area on a 2D slice"
+          >
+            Area
+          </Button>
+          <Button
+            onClick={() => {
+              setMeasurements([]);
+              setClearDraftSignal((n) => n + 1);
+            }}
+            disabled={measurements.length === 0}
+            title="Clear all measurements"
+          >
+            Clear
           </Button>
           <Label>Zoom {Math.round(zoom * 100)}%</Label>
           <Slider
@@ -827,6 +1124,10 @@ const MPRViewer = () => {
           zoom={zoom}
           onZoomChange={setZoom}
           viewEpoch={viewEpoch}
+          tool={tool}
+          measurements={measurements}
+          onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
+          onClearDraftSignal={clearDraftSignal}
         />
         <MPRSlicePane
           axis="coronal"
@@ -841,6 +1142,10 @@ const MPRViewer = () => {
           zoom={zoom}
           onZoomChange={setZoom}
           viewEpoch={viewEpoch}
+          tool={tool}
+          measurements={measurements}
+          onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
+          onClearDraftSignal={clearDraftSignal}
         />
         <MPRSlicePane
           axis="sagittal"
@@ -855,6 +1160,10 @@ const MPRViewer = () => {
           zoom={zoom}
           onZoomChange={setZoom}
           viewEpoch={viewEpoch}
+          tool={tool}
+          measurements={measurements}
+          onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
+          onClearDraftSignal={clearDraftSignal}
         />
         <Pane>
           <PaneLabel $color="#3d9a8b">3D Volume</PaneLabel>

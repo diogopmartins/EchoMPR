@@ -293,6 +293,8 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     axis,
     center,
     viewOrigin,
+    right,
+    down,
     pixelMm: step,
     stepX,
     stepY,
@@ -305,6 +307,45 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     },
     normalKey: spec.normalKey,
   };
+}
+
+/** Image pixel → 3D millimetres on the sampled plane. */
+export function imageToWorldMm(volume, slice, imgU, imgV) {
+  const originMm = voxelToMm(volume, slice.viewOrigin);
+  const cx = (slice.width - 1) / 2;
+  const cy = (slice.height - 1) / 2;
+  return add(
+    add(originMm, scale(slice.right, (imgU - cx) * slice.stepX)),
+    scale(slice.down, (imgV - cy) * slice.stepY)
+  );
+}
+
+/** 3D millimetres → image pixel on the current sample. */
+export function worldMmToImage(volume, slice, mm) {
+  const originMm = voxelToMm(volume, slice.viewOrigin);
+  const delta = sub(mm, originMm);
+  const cx = (slice.width - 1) / 2;
+  const cy = (slice.height - 1) / 2;
+  return {
+    u: cx + dot(delta, slice.right) / slice.stepX,
+    v: cy + dot(delta, slice.down) / slice.stepY,
+  };
+}
+
+export function distanceMm(a, b) {
+  return vecLen(sub(a, b));
+}
+
+/** Planar polygon area (mm²) using the slice's in-plane axes. */
+export function polygonAreaMm2(points, right, down) {
+  if (!points || points.length < 3) return 0;
+  const pts = points.map((p) => [dot(p, right), dot(p, down)]);
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    area += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+  }
+  return Math.abs(area) * 0.5;
 }
 
 /** Move center along the view normal by `deltaVoxels` (approx). */
