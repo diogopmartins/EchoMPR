@@ -1,7 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import styled from 'styled-components';
 import { Canvas } from '@react-three/fiber';
-import { Play, Pause, Download, Trash2 } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  Download,
+  Trash2,
+  Maximize2,
+  Minimize2,
+  Camera,
+  Film,
+  RotateCcw,
+  FlipHorizontal,
+} from 'lucide-react';
 import { useEcho } from '../context/EchoContext';
 import { renderSliceToCanvas, physicalSizeMm } from '../utils/philipsVolume';
 import {
@@ -29,6 +41,15 @@ import {
   sampleIndexToFrame,
 } from '../utils/ecg';
 import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
+import { encodeMjpegAvi } from '../utils/aviEncoder';
+import {
+  captureElementToCanvas,
+  canvasToBlob,
+  canvasToJpegBytes,
+  downloadBlob,
+  waitPaint,
+  waitMs,
+} from '../utils/captureLayout';
 
 const Container = styled.div`
   height: 100%;
@@ -242,6 +263,7 @@ const Grid = styled.div`
   gap: 2px;
   min-height: 0;
   background: #2a3542;
+  position: relative;
 `;
 
 const Pane = styled.div`
@@ -250,6 +272,17 @@ const Pane = styled.div`
   overflow: hidden;
   min-height: 0;
   box-shadow: inset 0 0 0 2px ${(p) => p.$borderColor || 'transparent'};
+  ${(p) => (p.$hidden ? 'visibility: hidden; pointer-events: none;' : '')}
+  ${(p) =>
+    p.$maximized
+      ? `
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    visibility: visible;
+    pointer-events: auto;
+  `
+      : ''}
 `;
 
 const PaneLabel = styled.div`
@@ -276,6 +309,33 @@ const SliceCanvas = styled.canvas`
   cursor: crosshair;
   image-rendering: auto;
   background: #000;
+`;
+
+const PaneTools = styled.div`
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  gap: 4px;
+`;
+
+const IconBtn = styled.button`
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid #3a4a5c;
+  color: #e8e6e3;
+  border-radius: 4px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(36, 48, 64, 0.92);
+  }
 `;
 
 const ZoomBadge = styled.div`
@@ -308,6 +368,12 @@ const AXIS_META = {
   coronal: { label: 'Coronal (Y)', short: 'Cor', color: '#43a047', key: 'y' },
   axial: { label: 'Axial (Z)', short: 'Ax', color: '#1e88e5', key: 'z' },
 };
+
+const CROP_PLANES = [
+  { key: 'x', axis: 'sagittal', name: 'Red' },
+  { key: 'y', axis: 'coronal', name: 'Green' },
+  { key: 'z', axis: 'axial', name: 'Blue' },
+];
 
 const MEASURE_COLORS = [
   '#ffd54f',
@@ -480,6 +546,11 @@ function MPRSlicePane({
   onUpdateMeasurement,
   onLiveDraftChange,
   onClearDraftSignal,
+  slabMm = 0,
+  slabMode = 'mean',
+  maximized = false,
+  hidden = false,
+  onToggleMaximize,
 }) {
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
@@ -713,6 +784,8 @@ function MPRSlicePane({
         height: paneSize.h,
         zoom,
         viewOrigin: resolveViewOrigin(),
+        slabMm,
+        slabMode,
       }
     );
     sliceRef.current = slice;
@@ -729,6 +802,8 @@ function MPRSlicePane({
     paneSize.w,
     paneSize.h,
     zoom,
+    slabMm,
+    slabMode,
     resolveViewOrigin,
   ]);
 
@@ -1100,9 +1175,14 @@ function MPRSlicePane({
   };
 
   const onDoubleClick = (e) => {
-    if (tool !== 'area' || !draft || draft.axis !== axis) return;
-    e.preventDefault();
-    finishArea(draft.points);
+    if (tool === 'area' && draft && draft.axis === axis) {
+      e.preventDefault();
+      finishArea(draft.points);
+      return;
+    }
+    if (tool === 'navigate') {
+      onToggleMaximize?.();
+    }
   };
 
   useEffect(() => {
@@ -1122,12 +1202,32 @@ function MPRSlicePane({
       ? 'Click two points to measure length · Drag points to edit'
       : tool === 'area'
         ? 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel'
-        : 'Drag a line near the ends to rotate (stays 90°) · Drag the middle to move it · Drag center to move the crosshair · Drag measurement points to edit · Wheel zoom · Shift+wheel scroll';
+        : 'Drag a line near the ends to rotate (stays 90°) · Drag the middle to move it · Drag center to move the crosshair · Drag measurement points to edit · Wheel zoom · Shift+wheel scroll · Double-click to maximize';
 
   return (
-    <Pane ref={containerRef} $borderColor={planeColor}>
+    <Pane
+      ref={containerRef}
+      $borderColor={planeColor}
+      $maximized={maximized}
+      $hidden={hidden}
+    >
       <PaneLabel $color={planeColor}>{AXIS_META[axis].label}</PaneLabel>
-      <ZoomBadge>{Math.round(zoom * 100)}%</ZoomBadge>
+      <PaneTools>
+        <IconBtn
+          type="button"
+          title={maximized ? 'Restore 2×2' : 'Maximize this view'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleMaximize?.();
+          }}
+        >
+          {maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </IconBtn>
+      </PaneTools>
+      <ZoomBadge>
+        {Math.round(zoom * 100)}%
+        {slabMm >= 1 ? ` · ${slabMm} mm${slabMode === 'mip' ? ' MIP' : ''}` : ''}
+      </ZoomBadge>
       <SliceCanvas ref={canvasRef} />
       <canvas
         ref={overlayRef}
@@ -1329,19 +1429,28 @@ const MPRViewer = () => {
   const [renderMode, setRenderMode] = useState('dvr');
   const [colorStyle, setColorStyle] = useState('glass');
   const [useCutPlanes, setUseCutPlanes] = useState(false);
+  const [cropPlaneKey, setCropPlaneKey] = useState('z');
+  const [cropFlip, setCropFlip] = useState(false);
   const [showMprLines, setShowMprLines] = useState(true);
   const [lightAzimuth, setLightAzimuth] = useState(38);
   const [lightElevation, setLightElevation] = useState(42);
   const [lightIntensity, setLightIntensity] = useState(1.55);
   const [zoom, setZoom] = useState(1.5);
+  const [slabMm, setSlabMm] = useState(0);
+  const [slabMode, setSlabMode] = useState('mean');
   const [viewEpoch, setViewEpoch] = useState(0);
   const [tool, setTool] = useState('navigate');
   const [measurements, setMeasurements] = useState([]);
   const [selectedMeasurementId, setSelectedMeasurementId] = useState(null);
   const [liveDraft, setLiveDraft] = useState(null);
   const [clearDraftSignal, setClearDraftSignal] = useState(0);
+  const [maximizedPane, setMaximizedPane] = useState(null);
+  const [cameraResetToken, setCameraResetToken] = useState(0);
+  const [exporting, setExporting] = useState(null);
   const timeRef = useRef(timeIndex);
   const labelCounters = useRef({ d: 0, a: 0 });
+  const viewportRef = useRef(null);
+  const maximizedRef = useRef(null);
 
   useEffect(() => {
     setMeasurements([]);
@@ -1352,19 +1461,22 @@ const MPRViewer = () => {
     labelCounters.current = { d: 0, a: 0 };
     setPlaying(false);
     setCineRate(1);
+    setMaximizedPane(null);
+    setExporting(null);
   }, [volume]);
   timeRef.current = timeIndex;
+  maximizedRef.current = maximizedPane;
   const playingRef = useRef(playing);
   playingRef.current = playing;
 
   useEffect(() => {
-    if (!playing || !volume || volume.dims.t <= 1) return undefined;
+    if (!playing || exporting || !volume || volume.dims.t <= 1) return undefined;
     const ms = Math.max(16, (volume.frameTimeMs || 50) / cineRate);
     const id = setInterval(() => {
       setTimeIndex((timeRef.current + 1) % volume.dims.t);
     }, ms);
     return () => clearInterval(id);
-  }, [playing, cineRate, volume, setTimeIndex]);
+  }, [playing, cineRate, volume, setTimeIndex, exporting]);
 
   useEffect(() => {
     const isTypingTarget = (el) => {
@@ -1378,11 +1490,17 @@ const MPRViewer = () => {
     const onKey = (ev) => {
       if (isTypingTarget(ev.target)) return;
       if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+      if (ev.key === 'Escape') {
+        setMaximizedPane(null);
+        return;
+      }
+
       if (!volume || volume.dims.t <= 1) return;
 
       if (ev.code === 'Space' || ev.key === ' ') {
         ev.preventDefault();
-        if (ev.repeat) return;
+        if (ev.repeat || exporting) return;
         setPlaying((p) => !p);
         return;
       }
@@ -1407,7 +1525,7 @@ const MPRViewer = () => {
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [volume, setTimeIndex]);
+  }, [volume, setTimeIndex, exporting]);
 
   const addMeasurement = (partial) => {
     const isDist = partial.type === 'distance';
@@ -1458,6 +1576,66 @@ const MPRViewer = () => {
     }
   };
 
+  const exportPng = async () => {
+    const el = viewportRef.current;
+    if (!el || exporting) return;
+    setExporting('png');
+    try {
+      await waitPaint();
+      const canvas = captureElementToCanvas(el, { dpr: 2, even: false });
+      const blob = await canvasToBlob(canvas, 'image/png');
+      downloadBlob(blob, 'echo_mpr.png');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const exportAvi = async () => {
+    const el = viewportRef.current;
+    if (!el || !volume || exporting) return;
+    const n = volume.dims.t;
+    if (n <= 1) return;
+    setPlaying(false);
+    const prevMax = maximizedRef.current;
+    setMaximizedPane(null);
+    const startT = timeIndex;
+    setExporting({ kind: 'avi', i: 0, n });
+    try {
+      await waitMs(90);
+      await waitPaint();
+      const frames = [];
+      let width = 0;
+      let height = 0;
+      for (let t = 0; t < n; t++) {
+        setExporting({ kind: 'avi', i: t + 1, n });
+        flushSync(() => setTimeIndex(t));
+        await waitPaint();
+        await waitMs(45);
+        const canvas = captureElementToCanvas(el, { dpr: 1.25, even: true });
+        width = canvas.width;
+        height = canvas.height;
+        frames.push(await canvasToJpegBytes(canvas, 0.82));
+      }
+      const fps = Math.max(
+        8,
+        Math.min(30, Math.round(1000 / (volume.frameTimeMs || 50)))
+      );
+      const avi = encodeMjpegAvi(frames, { width, height, fps });
+      downloadBlob(
+        new Blob([avi], { type: 'video/x-msvideo' }),
+        `echo_clip_${n}f.avi`
+      );
+    } catch (err) {
+      console.error(err);
+    } finally {
+      flushSync(() => setTimeIndex(startT));
+      setMaximizedPane(prevMax);
+      setExporting(null);
+    }
+  };
+
   if (!volume) {
     return (
       <Container>
@@ -1481,7 +1659,7 @@ const MPRViewer = () => {
           <Button
             $grow
             onClick={() => setPlaying((p) => !p)}
-            disabled={volume.dims.t <= 1}
+            disabled={volume.dims.t <= 1 || Boolean(exporting)}
             title="Play/pause (Space). Paused: ← → step frame. Playing: ← slower, → faster up to 1×"
           >
             {playing ? <Pause size={16} /> : <Play size={16} />}
@@ -1558,6 +1736,44 @@ const MPRViewer = () => {
           >
             Reset tilt
           </Button>
+        </ToolGroup>
+
+        <ToolGroup>
+          <GroupTitle>Slice</GroupTitle>
+          <SliderRow>
+            <Label $wide="4.8rem">
+              {slabMm < 1 ? 'Thin' : `${slabMm} mm`}
+            </Label>
+            <Slider
+              type="range"
+              min={0}
+              max={8}
+              step={1}
+              value={slabMm}
+              onChange={(e) => setSlabMm(Number(e.target.value))}
+              title="Slice thickness (0 = single plane)"
+            />
+          </SliderRow>
+          <ButtonRow>
+            <Button
+              $grow
+              $active={slabMode === 'mean'}
+              onClick={() => setSlabMode('mean')}
+              disabled={slabMm < 1}
+              title="Average through the slab"
+            >
+              Mean
+            </Button>
+            <Button
+              $grow
+              $active={slabMode === 'mip'}
+              onClick={() => setSlabMode('mip')}
+              disabled={slabMm < 1}
+              title="Maximum intensity through the slab"
+            >
+              MIP
+            </Button>
+          </ButtonRow>
         </ToolGroup>
 
         <ToolGroup>
@@ -1747,7 +1963,7 @@ const MPRViewer = () => {
               $grow
               $active={useCutPlanes}
               onClick={() => setUseCutPlanes((v) => !v)}
-              title="Cut volume at crosshair"
+              title="Crop the 3D volume with an MPR plane"
             >
               {useCutPlanes ? 'Cuts on' : 'Cuts off'}
             </Button>
@@ -1760,6 +1976,70 @@ const MPRViewer = () => {
               {showMprLines ? 'MPR lines on' : 'MPR lines off'}
             </Button>
           </ButtonRow>
+          <ButtonRow>
+            {CROP_PLANES.map((p) => (
+              <Button
+                key={p.key}
+                $grow
+                $active={cropPlaneKey === p.key}
+                onClick={() => {
+                  setCropPlaneKey(p.key);
+                  setUseCutPlanes(true);
+                }}
+                title={`Crop with the ${p.name.toLowerCase()} ${AXIS_META[p.axis].label} plane`}
+                style={{ color: AXIS_META[p.axis].color }}
+              >
+                {p.name}
+              </Button>
+            ))}
+          </ButtonRow>
+          <Button
+            $grow
+            onClick={() => setCropFlip((v) => !v)}
+            disabled={!useCutPlanes}
+            title="Keep the other side of the crop plane"
+          >
+            <FlipHorizontal size={14} />
+            Flip side
+          </Button>
+          <Button
+            $grow
+            onClick={() => setCameraResetToken((n) => n + 1)}
+            title="Reset 3D camera"
+          >
+            <RotateCcw size={14} />
+            Reset 3D
+          </Button>
+        </ToolGroup>
+
+        <ToolGroup>
+          <GroupTitle>Export</GroupTitle>
+          <ButtonRow>
+            <Button
+              $grow
+              onClick={exportPng}
+              disabled={Boolean(exporting)}
+              title="Screenshot of the current views (PNG)"
+            >
+              <Camera size={14} />
+              PNG
+            </Button>
+            <Button
+              $grow
+              onClick={exportAvi}
+              disabled={Boolean(exporting) || volume.dims.t <= 1}
+              title="Cine clip as Motion-JPEG AVI"
+            >
+              <Film size={14} />
+              {exporting?.kind === 'avi'
+                ? `${exporting.i}/${exporting.n}`
+                : 'AVI'}
+            </Button>
+          </ButtonRow>
+          <Button $grow onClick={exportFrame} disabled={Boolean(exporting)}>
+            <Download size={16} />
+            NRRD
+          </Button>
         </ToolGroup>
 
         <ToolGroup>
@@ -1798,10 +2078,6 @@ const MPRViewer = () => {
               title="Light intensity"
             />
           </SliderRow>
-          <Button $grow onClick={exportFrame}>
-            <Download size={16} />
-            NRRD
-          </Button>
         </ToolGroup>
 
         <Meta>
@@ -1812,76 +2088,78 @@ const MPRViewer = () => {
         </Meta>
       </ControlSidebar>
 
-      <Viewport>
+      <Viewport ref={viewportRef}>
       <Grid>
-        <MPRSlicePane
-          axis="axial"
-          volume={volume}
-          timeIndex={timeIndex}
-          mprCenter={mprCenter}
-          mprBasis={mprBasis}
-          windowCenter={windowCenter}
-          windowWidth={windowWidth}
-          onCenterChange={setMprCenter}
-          onBasisChange={setMprBasis}
-          zoom={zoom}
-          onZoomChange={setZoom}
-          viewEpoch={viewEpoch}
-          tool={tool}
-          measurements={measurements}
-          selectedMeasurementId={selectedMeasurementId}
-          onSelectMeasurement={setSelectedMeasurementId}
-          onAddMeasurement={addMeasurement}
-          onUpdateMeasurement={updateMeasurement}
-          onLiveDraftChange={setLiveDraft}
-          onClearDraftSignal={clearDraftSignal}
-        />
-        <MPRSlicePane
-          axis="coronal"
-          volume={volume}
-          timeIndex={timeIndex}
-          mprCenter={mprCenter}
-          mprBasis={mprBasis}
-          windowCenter={windowCenter}
-          windowWidth={windowWidth}
-          onCenterChange={setMprCenter}
-          onBasisChange={setMprBasis}
-          zoom={zoom}
-          onZoomChange={setZoom}
-          viewEpoch={viewEpoch}
-          tool={tool}
-          measurements={measurements}
-          selectedMeasurementId={selectedMeasurementId}
-          onSelectMeasurement={setSelectedMeasurementId}
-          onAddMeasurement={addMeasurement}
-          onUpdateMeasurement={updateMeasurement}
-          onLiveDraftChange={setLiveDraft}
-          onClearDraftSignal={clearDraftSignal}
-        />
-        <MPRSlicePane
-          axis="sagittal"
-          volume={volume}
-          timeIndex={timeIndex}
-          mprCenter={mprCenter}
-          mprBasis={mprBasis}
-          windowCenter={windowCenter}
-          windowWidth={windowWidth}
-          onCenterChange={setMprCenter}
-          onBasisChange={setMprBasis}
-          zoom={zoom}
-          onZoomChange={setZoom}
-          viewEpoch={viewEpoch}
-          tool={tool}
-          measurements={measurements}
-          selectedMeasurementId={selectedMeasurementId}
-          onSelectMeasurement={setSelectedMeasurementId}
-          onAddMeasurement={addMeasurement}
-          onUpdateMeasurement={updateMeasurement}
-          onLiveDraftChange={setLiveDraft}
-          onClearDraftSignal={clearDraftSignal}
-        />
-        <Pane>
+        {['axial', 'coronal', 'sagittal'].map((axis) => (
+          <MPRSlicePane
+            key={axis}
+            axis={axis}
+            volume={volume}
+            timeIndex={timeIndex}
+            mprCenter={mprCenter}
+            mprBasis={mprBasis}
+            windowCenter={windowCenter}
+            windowWidth={windowWidth}
+            onCenterChange={setMprCenter}
+            onBasisChange={setMprBasis}
+            zoom={zoom}
+            onZoomChange={setZoom}
+            viewEpoch={viewEpoch}
+            tool={tool}
+            measurements={measurements}
+            selectedMeasurementId={selectedMeasurementId}
+            onSelectMeasurement={setSelectedMeasurementId}
+            onAddMeasurement={addMeasurement}
+            onUpdateMeasurement={updateMeasurement}
+            onLiveDraftChange={setLiveDraft}
+            onClearDraftSignal={clearDraftSignal}
+            slabMm={slabMm}
+            slabMode={slabMode}
+            maximized={maximizedPane === axis}
+            hidden={Boolean(maximizedPane && maximizedPane !== axis)}
+            onToggleMaximize={() =>
+              setMaximizedPane((p) => (p === axis ? null : axis))
+            }
+          />
+        ))}
+        <Pane
+          $borderColor="#3d9a8b"
+          $maximized={maximizedPane === 'volume'}
+          $hidden={Boolean(maximizedPane && maximizedPane !== 'volume')}
+          onDoubleClick={(e) => {
+            if (e.target.closest('button')) return;
+            setMaximizedPane((p) => (p === 'volume' ? null : 'volume'));
+          }}
+        >
           <PaneLabel $color="#3d9a8b">3D Volume</PaneLabel>
+          <PaneTools>
+            <IconBtn
+              type="button"
+              title="Reset 3D camera"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCameraResetToken((n) => n + 1);
+              }}
+            >
+              <RotateCcw size={14} />
+            </IconBtn>
+            <IconBtn
+              type="button"
+              title={
+                maximizedPane === 'volume' ? 'Restore 2×2' : 'Maximize 3D'
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                setMaximizedPane((p) => (p === 'volume' ? null : 'volume'));
+              }}
+            >
+              {maximizedPane === 'volume' ? (
+                <Minimize2 size={14} />
+              ) : (
+                <Maximize2 size={14} />
+              )}
+            </IconBtn>
+          </PaneTools>
           <Canvas
             flat
             dpr={[1, 2]}
@@ -1896,7 +2174,7 @@ const MPRViewer = () => {
               alpha: false,
               powerPreference: 'high-performance',
               stencil: false,
-              preserveDrawingBuffer: false,
+              preserveDrawingBuffer: true,
             }}
           >
             <VolumeRenderer
@@ -1907,8 +2185,9 @@ const MPRViewer = () => {
               opacity={opacity}
               renderMode={renderMode}
               colorStyle={colorStyle}
-              crosshair={crosshair}
               useCutPlanes={useCutPlanes}
+              cropPlaneKey={cropPlaneKey}
+              cropFlip={cropFlip}
               showMprLines={showMprLines}
               mprCenter={mprCenter}
               mprBasis={mprBasis}
@@ -1918,6 +2197,8 @@ const MPRViewer = () => {
               measurements={measurements}
               selectedMeasurementId={selectedMeasurementId}
               liveDraft={liveDraft}
+              cameraResetToken={cameraResetToken}
+              forceHighQuality={Boolean(exporting)}
             />
           </Canvas>
         </Pane>

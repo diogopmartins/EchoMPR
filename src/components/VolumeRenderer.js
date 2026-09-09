@@ -3,7 +3,12 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { getVolumeAtTime, physicalSizeMm } from '../utils/philipsVolume';
-import { cross as cross3, mmToUnitBox, normalize as normalize3 } from '../utils/mprGeometry';
+import {
+  cross as cross3,
+  mmToUnitBox,
+  normalize as normalize3,
+  voxelToMm,
+} from '../utils/mprGeometry';
 
 const vertexShader = /* glsl */ `
 out vec3 vOrigin;
@@ -33,7 +38,8 @@ uniform float steps;
 uniform vec3 clim;
 uniform int renderMode;
 uniform int colorStyle;
-uniform vec3 cutPlane;
+uniform vec3 cropOrigin;
+uniform vec3 cropNormal;
 uniform bool useCutPlanes;
 uniform vec3 lightPos;
 uniform float lightIntensity;
@@ -98,7 +104,7 @@ vec3 transillumination(vec3 pos, vec3 toLight) {
     p += toLight * dt;
     vec3 uv = p + 0.5;
     if (!inUnit(uv)) break;
-    if (useCutPlanes && (uv.x < cutPlane.x || uv.y < cutPlane.y || uv.z < cutPlane.z)) continue;
+    if (useCutPlanes && dot(p - cropOrigin, cropNormal) < 0.0) continue;
     float intensity = smoothstep(clim.x + 0.05, clim.y, sampleDensity(uv));
     od += intensity * dt * 3.0;
   }
@@ -114,10 +120,19 @@ void main() {
   vec3 rayDir = normalize(vDirection);
   vec3 bmin = vec3(-0.5);
   vec3 bmax = vec3(0.5);
-  if (useCutPlanes) {
-    bmin = max(bmin, cutPlane - 0.5);
-  }
   vec2 bounds = hitBox(vOrigin, rayDir, bmin, bmax);
+  if (useCutPlanes) {
+    float dn = dot(rayDir, cropNormal);
+    float dist = dot(cropOrigin - vOrigin, cropNormal);
+    if (abs(dn) > 1e-6) {
+      float tHit = dist / dn;
+      if (dn > 0.0) bounds.x = max(bounds.x, tHit);
+      else bounds.y = min(bounds.y, tHit);
+    } else if (dot(vOrigin - cropOrigin, cropNormal) < 0.0) {
+      fragColor = vec4(bgColor, 1.0);
+      return;
+    }
+  }
   if (bounds.x >= bounds.y) {
     fragColor = vec4(bgColor, 1.0);
     return;
@@ -145,7 +160,7 @@ void main() {
 
     if (inUnit(uv)) {
       bool visible = true;
-      if (useCutPlanes && (uv.x < cutPlane.x - 0.001 || uv.y < cutPlane.y - 0.001 || uv.z < cutPlane.z - 0.001)) {
+      if (useCutPlanes && dot(p - cropOrigin, cropNormal) < -0.001) {
         visible = false;
       }
 
@@ -383,7 +398,7 @@ function clipPlaneToUnitBox(origin, normal) {
   return uniq;
 }
 
-function MprPlaneOverlay({ points, color }) {
+function MprPlaneOverlay({ points, color, emphasis }) {
   const fillGeom = useMemo(() => {
     const g = new THREE.BufferGeometry();
     if (!points || points.length < 3) return g;
@@ -412,7 +427,7 @@ function MprPlaneOverlay({ points, color }) {
         <meshBasicMaterial
           color={color}
           transparent
-          opacity={0.13}
+          opacity={emphasis ? 0.22 : 0.13}
           side={THREE.DoubleSide}
           depthWrite={false}
         />
@@ -420,7 +435,7 @@ function MprPlaneOverlay({ points, color }) {
       <Line
         points={loop}
         color={color}
-        lineWidth={2.4}
+        lineWidth={emphasis ? 3.2 : 2.4}
         renderOrder={3}
         depthTest
         transparent
@@ -430,7 +445,7 @@ function MprPlaneOverlay({ points, color }) {
   );
 }
 
-function MprPlanes({ volume, mprCenter, mprBasis }) {
+function MprPlanes({ volume, mprCenter, mprBasis, cropPlaneKey }) {
   const sizeMm = useMemo(() => physicalSizeMm(volume), [volume]);
   const dims = volume.dims;
 
@@ -467,13 +482,18 @@ function MprPlanes({ volume, mprCenter, mprBasis }) {
   return (
     <group>
       {planes.map((p) => (
-        <MprPlaneOverlay key={p.key} points={p.points} color={p.color} />
+        <MprPlaneOverlay
+          key={p.key}
+          points={p.points}
+          color={p.color}
+          emphasis={cropPlaneKey === p.key}
+        />
       ))}
     </group>
   );
 }
 
-function VolumeFrame({ useCutPlanes, cutPlane }) {
+function VolumeFrame() {
   const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
   const edges = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
 
@@ -485,14 +505,8 @@ function VolumeFrame({ useCutPlanes, cutPlane }) {
     [geometry, edges]
   );
 
-  const minx = useCutPlanes ? cutPlane.x - 0.5 : -0.5;
-  const miny = useCutPlanes ? cutPlane.y - 0.5 : -0.5;
-  const minz = useCutPlanes ? cutPlane.z - 0.5 : -0.5;
-  const size = [0.5 - minx, 0.5 - miny, 0.5 - minz];
-  const pos = [(minx + 0.5) / 2, (miny + 0.5) / 2, (minz + 0.5) / 2];
-
   return (
-    <lineSegments position={pos} scale={size} geometry={edges}>
+    <lineSegments geometry={edges}>
       <lineBasicMaterial color="#5ec8b8" transparent opacity={0.38} />
     </lineSegments>
   );
@@ -668,12 +682,14 @@ function VolumeMesh({
   opacity,
   renderMode,
   colorStyle,
-  crosshair,
   useCutPlanes,
+  cropPlaneKey,
+  cropFlip,
   lightAzimuth,
   lightElevation,
   lightIntensity,
   interactive,
+  forceHighQuality,
   showMprLines,
   mprCenter,
   mprBasis,
@@ -737,15 +753,24 @@ function VolumeMesh({
     return new THREE.Vector3(min, max, 0);
   }, [windowCenter, windowWidth]);
 
-  const cutPlane = useMemo(
-    () =>
-      new THREE.Vector3(
-        (crosshair.x + 0.5) / volume.dims.x,
-        (crosshair.y + 0.5) / volume.dims.y,
-        (crosshair.z + 0.5) / volume.dims.z
-      ),
-    [volume, crosshair]
-  );
+  const cropOrigin = useMemo(() => {
+    const o = mmToUnitBox(volume, voxelToMm(volume, mprCenter));
+    return new THREE.Vector3(o[0], o[1], o[2]);
+  }, [volume, mprCenter]);
+
+  const cropNormal = useMemo(() => {
+    const key = cropPlaneKey === 'x' || cropPlaneKey === 'y' ? cropPlaneKey : 'z';
+    const nMm = mprBasis?.[key] || [0, 0, 1];
+    const n = new THREE.Vector3(
+      nMm[0] / Math.max(sizeMm.x, 1e-6),
+      nMm[1] / Math.max(sizeMm.y, 1e-6),
+      nMm[2] / Math.max(sizeMm.z, 1e-6)
+    );
+    if (n.lengthSq() < 1e-10) n.set(0, 0, 1);
+    n.normalize();
+    if (cropFlip) n.multiplyScalar(-1);
+    return n;
+  }, [mprBasis, sizeMm, cropPlaneKey, cropFlip]);
 
   const lightDir = useMemo(() => {
     const az = (lightAzimuth * Math.PI) / 180;
@@ -763,13 +788,14 @@ function VolumeMesh({
     [lightDir]
   );
 
-  const stepCount = interactive
-    ? colorStyle === 'glass'
-      ? 180
-      : 140
-    : colorStyle === 'glass'
-      ? 420
-      : 320;
+  const stepCount =
+    interactive && !forceHighQuality
+      ? colorStyle === 'glass'
+        ? 180
+        : 140
+      : colorStyle === 'glass'
+        ? 420
+        : 320;
 
   useEffect(() => {
     const bg = STYLE_BG[colorStyle] || STYLE_BG.glass;
@@ -793,7 +819,8 @@ function VolumeMesh({
       clim: { value: clim },
       renderMode: { value: MODE_MAP[renderMode] ?? 1 },
       colorStyle: { value: STYLE_MAP[colorStyle] ?? 2 },
-      cutPlane: { value: cutPlane },
+      cropOrigin: { value: cropOrigin },
+      cropNormal: { value: cropNormal },
       useCutPlanes: { value: useCutPlanes },
       lightPos: { value: lightPos },
       lightIntensity: { value: lightIntensity },
@@ -818,7 +845,8 @@ function VolumeMesh({
     u.clim.value = clim;
     u.renderMode.value = MODE_MAP[renderMode] ?? 1;
     u.colorStyle.value = STYLE_MAP[colorStyle] ?? 2;
-    u.cutPlane.value = cutPlane;
+    u.cropOrigin.value = cropOrigin;
+    u.cropNormal.value = cropNormal;
     u.useCutPlanes.value = useCutPlanes;
     u.lightPos.value = lightPos;
     u.lightIntensity.value = lightIntensity;
@@ -833,7 +861,8 @@ function VolumeMesh({
     clim,
     renderMode,
     colorStyle,
-    cutPlane,
+    cropOrigin,
+    cropNormal,
     useCutPlanes,
     lightPos,
     lightIntensity,
@@ -858,12 +887,13 @@ function VolumeMesh({
           glslVersion={THREE.GLSL3}
         />
       </mesh>
-      <VolumeFrame useCutPlanes={useCutPlanes} cutPlane={cutPlane} />
+      <VolumeFrame />
       {showMprLines && mprCenter && mprBasis && (
         <MprPlanes
           volume={volume}
           mprCenter={mprCenter}
           mprBasis={mprBasis}
+          cropPlaneKey={cropPlaneKey}
         />
       )}
       <MeasurementOverlay
@@ -874,8 +904,41 @@ function VolumeMesh({
         liveDraft={liveDraft}
         scale={scale}
       />
-      <axesHelper args={[0.16]} position={[-0.46, -0.46, -0.46]} />
     </group>
+  );
+}
+
+function CameraRig({ resetToken, onInteractive }) {
+  const controls = useRef();
+  const { camera } = useThree();
+  const prev = useRef(resetToken);
+
+  useEffect(() => {
+    if (resetToken === prev.current) return;
+    prev.current = resetToken;
+    camera.position.set(1.15, 0.82, 1.25);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    const c = controls.current;
+    if (c) {
+      c.target.set(0, 0, 0);
+      c.update();
+    }
+  }, [resetToken, camera]);
+
+  return (
+    <OrbitControls
+      ref={controls}
+      makeDefault
+      enablePan
+      enableZoom
+      enableRotate
+      rotateSpeed={0.72}
+      zoomSpeed={0.85}
+      onStart={() => onInteractive(true)}
+      onEnd={() => onInteractive(false)}
+    />
   );
 }
 
@@ -887,8 +950,9 @@ const VolumeRenderer = ({
   opacity = 0.55,
   renderMode = 'dvr',
   colorStyle = 'glass',
-  crosshair,
   useCutPlanes = false,
+  cropPlaneKey = 'z',
+  cropFlip = false,
   lightAzimuth = 30,
   lightElevation = 48,
   lightIntensity = 1.35,
@@ -898,6 +962,8 @@ const VolumeRenderer = ({
   measurements,
   selectedMeasurementId,
   liveDraft,
+  cameraResetToken = 0,
+  forceHighQuality = false,
 }) => {
   const [interactive, setInteractive] = useState(false);
 
@@ -916,12 +982,14 @@ const VolumeRenderer = ({
         opacity={opacity}
         renderMode={renderMode}
         colorStyle={colorStyle}
-        crosshair={crosshair}
         useCutPlanes={useCutPlanes}
+        cropPlaneKey={cropPlaneKey}
+        cropFlip={cropFlip}
         lightAzimuth={lightAzimuth}
         lightElevation={lightElevation}
         lightIntensity={lightIntensity}
         interactive={interactive}
+        forceHighQuality={forceHighQuality}
         showMprLines={showMprLines}
         mprCenter={mprCenter}
         mprBasis={mprBasis}
@@ -929,15 +997,9 @@ const VolumeRenderer = ({
         selectedMeasurementId={selectedMeasurementId}
         liveDraft={liveDraft}
       />
-      <OrbitControls
-        makeDefault
-        enablePan
-        enableZoom
-        enableRotate
-        rotateSpeed={0.72}
-        zoomSpeed={0.85}
-        onStart={() => setInteractive(true)}
-        onEnd={() => setInteractive(false)}
+      <CameraRig
+        resetToken={cameraResetToken}
+        onInteractive={setInteractive}
       />
     </>
   );

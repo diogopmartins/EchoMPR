@@ -216,12 +216,13 @@ export function isNearAxisAligned(basis, eps = 0.985) {
 
 /**
  * Sample an oblique plane through center at a target pixel size.
- * options: { width, height, zoom } — matches pane aspect and fills the view.
- * Uses view-sized FOV (not full 3D diagonal) so voxels stay sharp like the cart.
+ * options: { width, height, zoom, slabMm, slabMode }
+ * slabMode: 'mean' (thick slice) or 'mip' (thin MIP).
  */
 export function sampleObliquePlane(volume, t, center, basis, axis, options = {}) {
   const spec = viewSpec(axis);
   const normal = basis[spec.normalKey];
+  const nHat = normalize(normal);
   const { right, down } = planeAxes(normal, spec.worldUp);
   const zoom = Math.max(0.25, Math.min(8, options.zoom || 1));
 
@@ -250,20 +251,44 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
   const cx = (width - 1) / 2;
   const cy = (height - 1) / 2;
 
+  const slabMm = Math.max(0, options.slabMm || 0);
+  const slabMode = options.slabMode === 'mip' ? 'mip' : 'mean';
+  const sp = spacingMm(volume);
+  const alongMm = Math.max(
+    0.35,
+    Math.hypot(nHat[0] * sp.x, nHat[1] * sp.y, nHat[2] * sp.z)
+  );
+  let nSlab = 1;
+  if (slabMm >= 0.75) {
+    nSlab = Math.round(slabMm / alongMm) + 1;
+    nSlab = Math.min(15, Math.max(3, nSlab));
+    if (nSlab % 2 === 0) nSlab += 1;
+  }
+  const halfK = (nSlab - 1) / 2;
+  const halfMm = slabMm / 2;
+
   for (let j = 0; j < height; j++) {
     for (let i = 0; i < width; i++) {
-      const mm = add(
+      const base = add(
         add(originMm, scale(right, (i - cx) * stepX)),
         scale(down, (j - cy) * stepY)
       );
-      const vox = mmToVoxel(volume, mm);
-      data[j * width + i] = trilinear(
-        vol,
-        volume.dims,
-        vox.x,
-        vox.y,
-        vox.z
-      );
+      if (nSlab === 1) {
+        const vox = mmToVoxel(volume, base);
+        data[j * width + i] = trilinear(vol, volume.dims, vox.x, vox.y, vox.z);
+      } else {
+        let acc = 0;
+        let mx = 0;
+        for (let k = 0; k < nSlab; k++) {
+          const tOff = halfK === 0 ? 0 : ((k - halfK) / halfK) * halfMm;
+          const mm = add(base, scale(nHat, tOff));
+          const vox = mmToVoxel(volume, mm);
+          const v = trilinear(vol, volume.dims, vox.x, vox.y, vox.z);
+          if (v > mx) mx = v;
+          acc += v;
+        }
+        data[j * width + i] = slabMode === 'mip' ? mx : acc / nSlab;
+      }
     }
   }
 
