@@ -13,6 +13,7 @@ import {
   Film,
   RotateCcw,
   FlipHorizontal,
+  ChevronDown,
 } from 'lucide-react';
 import { useEcho } from '../context/EchoContext';
 import { renderSliceToCanvas, physicalSizeMm } from '../utils/philipsVolume';
@@ -120,12 +121,73 @@ const ToolGroup = styled.div`
   }
 `;
 
-const GroupTitle = styled.div`
+const AccordionHeader = styled.button`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
   font-size: 0.65rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #7a8a99;
   font-weight: 600;
+  font-family: inherit;
+
+  svg {
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+    transform: rotate(${(p) => (p.$open ? '0deg' : '-90deg')});
+  }
+`;
+
+const MenuRoot = styled.div`
+  position: fixed;
+  z-index: 40;
+  min-width: 188px;
+  padding: 0.3rem 0;
+  background: #1c2632;
+  border: 1px solid #3a4a5c;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+`;
+
+const MenuItem = styled.button.attrs({ type: 'button' })`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  background: ${(p) => (p.$active ? 'rgba(61, 154, 139, 0.28)' : 'transparent')};
+  border: none;
+  color: ${(p) => (p.$active ? '#d7fff6' : '#e8e6e3')};
+  text-align: left;
+  padding: 0.38rem 0.75rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+
+  &:hover {
+    background: ${(p) => (p.$active ? 'rgba(61, 154, 139, 0.38)' : '#243040')};
+  }
+`;
+
+const MenuSep = styled.div`
+  height: 1px;
+  background: #2a3542;
+  margin: 0.28rem 0;
+`;
+
+const MenuHint = styled.div`
+  padding: 0.2rem 0.75rem 0.35rem;
+  font-size: 0.65rem;
+  color: #7a8a99;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 `;
 
 const SliderRow = styled.div`
@@ -392,6 +454,101 @@ const MEASURE_COLORS = [
 
 const CINE_RATES = [0.25, 0.5, 0.75, 1];
 
+const DEFAULT_SECTIONS = {
+  cine: true,
+  tools: true,
+  measure: true,
+  planes: true,
+  image: false,
+  volume: false,
+  export: false,
+};
+
+function SidebarSection({ title, open, onToggle, children }) {
+  return (
+    <ToolGroup>
+      <AccordionHeader type="button" onClick={onToggle} $open={open}>
+        <span>{title}</span>
+        <ChevronDown size={13} />
+      </AccordionHeader>
+      {open ? children : null}
+    </ToolGroup>
+  );
+}
+
+function clampMenuPos(x, y, w = 196, h = 320) {
+  return {
+    x: Math.max(8, Math.min(x, window.innerWidth - w - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - h - 8)),
+  };
+}
+
+function ViewContextMenu({
+  menu,
+  tool,
+  maximized,
+  showMprLines,
+  useCutPlanes,
+  onAction,
+  onClose,
+}) {
+  if (!menu) return null;
+  const pos = clampMenuPos(menu.x, menu.y);
+  const is3d = menu.pane === 'volume';
+
+  return (
+    <>
+      <div
+        role="presentation"
+        onMouseDown={onClose}
+        style={{ position: 'fixed', inset: 0, zIndex: 39 }}
+      />
+      <MenuRoot
+        style={{ left: pos.x, top: pos.y }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <MenuHint>{is3d ? '3D view' : '2D view'}</MenuHint>
+        {!is3d && (
+          <>
+            <MenuItem $active={tool === 'navigate'} onClick={() => onAction('nav')}>
+              Nav
+            </MenuItem>
+            <MenuItem $active={tool === 'distance'} onClick={() => onAction('length')}>
+              Length
+            </MenuItem>
+            <MenuItem $active={tool === 'area'} onClick={() => onAction('area')}>
+              Area
+            </MenuItem>
+            <MenuSep />
+          </>
+        )}
+        <MenuItem onClick={() => onAction('max')}>
+          {maximized ? 'Restore 2×2' : 'Maximize'}
+        </MenuItem>
+        {!is3d && (
+          <>
+            <MenuItem onClick={() => onAction('fit')}>Fit zoom</MenuItem>
+            <MenuItem onClick={() => onAction('resetTilt')}>Reset tilt</MenuItem>
+          </>
+        )}
+        {is3d && (
+          <>
+            <MenuItem onClick={() => onAction('reset3d')}>Reset 3D camera</MenuItem>
+            <MenuItem $active={showMprLines} onClick={() => onAction('mprLines')}>
+              {showMprLines ? 'Hide MPR lines' : 'Show MPR lines'}
+            </MenuItem>
+            <MenuItem $active={useCutPlanes} onClick={() => onAction('cuts')}>
+              {useCutPlanes ? 'Cuts off' : 'Cuts on'}
+            </MenuItem>
+          </>
+        )}
+        <MenuSep />
+        <MenuItem onClick={() => onAction('png')}>Save PNG</MenuItem>
+      </MenuRoot>
+    </>
+  );
+}
+
 function hexToRgba(hex, alpha) {
   const n = (hex || '#ffd54f').replace('#', '');
   const r = parseInt(n.slice(0, 2), 16);
@@ -551,12 +708,14 @@ function MPRSlicePane({
   maximized = false,
   hidden = false,
   onToggleMaximize,
+  onOpenMenu,
 }) {
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
   const containerRef = useRef(null);
   const sliceRef = useRef(null);
   const dragRef = useRef(null);
+  const clickStartRef = useRef(null);
   const viewOriginRef = useRef(null);
   const [paneSize, setPaneSize] = useState({ w: 512, h: 512 });
   const [draft, setDraft] = useState(null);
@@ -975,13 +1134,16 @@ function MPRSlicePane({
   };
 
   const onPointerDown = (e) => {
+    if (e.button !== 0) return;
     const pos = pointerCss(e.clientX, e.clientY);
     if (!pos) return;
     const slice = sliceRef.current;
     e.currentTarget.setPointerCapture(e.pointerId);
+    clickStartRef.current = { x: e.clientX, y: e.clientY, consumed: false };
 
     const editHit = hitMeasurement(pos);
     if (editHit) {
+      clickStartRef.current.consumed = true;
       onSelectMeasurement?.(editHit.id);
       dragRef.current = {
         ...editHit,
@@ -992,6 +1154,7 @@ function MPRSlicePane({
     }
 
     if (tool !== 'navigate') {
+      clickStartRef.current.consumed = true;
       const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
       if (tool === 'distance') {
         if (!draft || draft.type !== 'distance') {
@@ -1056,22 +1219,48 @@ function MPRSlicePane({
     }
 
     const hit = hitTestMode(pos);
-    dragRef.current = {
-      ...hit,
-      lastU: pos.imgU,
-      lastV: pos.imgV,
-      angle0: Math.atan2(pos.y - pos.cy, pos.x - pos.cx),
-      basis0: basisRef.current,
-    };
-    e.currentTarget.style.cursor =
-      hit.mode === 'tilt' ? 'grabbing' : hit.mode === 'moveLine' ? 'move' : 'move';
+    const atCenter = Math.hypot(pos.x - pos.cx, pos.y - pos.cy) < 12;
+    if (hit.mode === 'tilt' || hit.mode === 'moveLine' || atCenter) {
+      clickStartRef.current.consumed = true;
+      dragRef.current = {
+        ...hit,
+        lastU: pos.imgU,
+        lastV: pos.imgV,
+        angle0: Math.atan2(pos.y - pos.cy, pos.x - pos.cx),
+        basis0: basisRef.current,
+      };
+      e.currentTarget.style.cursor =
+        hit.mode === 'tilt' ? 'grabbing' : hit.mode === 'moveLine' ? 'move' : 'move';
+    }
   };
 
   const onPointerMove = (e) => {
+    const start = clickStartRef.current;
+    if (start && !start.consumed) {
+      const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y);
+      if (moved > 6) start.consumed = true;
+    }
     const pos = pointerCss(e.clientX, e.clientY, { clamp: !dragRef.current });
     if (!pos) return;
     const slice = sliceRef.current;
     const drag = dragRef.current;
+
+    if (
+      start?.consumed &&
+      tool === 'navigate' &&
+      !drag &&
+      !hitMeasurement(pos)
+    ) {
+      dragRef.current = {
+        mode: 'move',
+        lastU: pos.imgU,
+        lastV: pos.imgV,
+        angle0: Math.atan2(pos.y - pos.cy, pos.x - pos.cx),
+        basis0: basisRef.current,
+      };
+      e.currentTarget.style.cursor = 'move';
+      return;
+    }
 
     if (drag?.mode === 'editPoint' || drag?.mode === 'editMove') {
       const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
@@ -1170,18 +1359,24 @@ function MPRSlicePane({
   };
 
   const onPointerUp = (e) => {
+    const start = clickStartRef.current;
+    clickStartRef.current = null;
     dragRef.current = null;
     e.currentTarget.style.cursor = 'crosshair';
+    if (e.button !== 0 || !start || start.consumed) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6) return;
+    onOpenMenu?.({ x: e.clientX, y: e.clientY, pane: axis });
+  };
+
+  const onContextMenu = (e) => {
+    e.preventDefault();
+    onOpenMenu?.({ x: e.clientX, y: e.clientY, pane: axis });
   };
 
   const onDoubleClick = (e) => {
     if (tool === 'area' && draft && draft.axis === axis) {
       e.preventDefault();
       finishArea(draft.points);
-      return;
-    }
-    if (tool === 'navigate') {
-      onToggleMaximize?.();
     }
   };
 
@@ -1202,7 +1397,7 @@ function MPRSlicePane({
       ? 'Click two points to measure length · Drag points to edit'
       : tool === 'area'
         ? 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel'
-        : 'Drag a line near the ends to rotate (stays 90°) · Drag the middle to move it · Drag center to move the crosshair · Drag measurement points to edit · Wheel zoom · Shift+wheel scroll · Double-click to maximize';
+        : 'Left-click empty space for the menu · Drag a line near the ends to rotate · Drag the middle to move it · Wheel zoom · Shift+wheel scroll';
 
   return (
     <Pane
@@ -1236,6 +1431,7 @@ function MPRSlicePane({
         onPointerUp={onPointerUp}
         onPointerLeave={() => onLiveDraftChange?.(null)}
         onDoubleClick={onDoubleClick}
+        onContextMenu={onContextMenu}
         title={hint}
         style={{
           position: 'absolute',
@@ -1447,10 +1643,13 @@ const MPRViewer = () => {
   const [maximizedPane, setMaximizedPane] = useState(null);
   const [cameraResetToken, setCameraResetToken] = useState(0);
   const [exporting, setExporting] = useState(null);
+  const [openSections, setOpenSections] = useState(DEFAULT_SECTIONS);
+  const [viewMenu, setViewMenu] = useState(null);
   const timeRef = useRef(timeIndex);
   const labelCounters = useRef({ d: 0, a: 0 });
   const viewportRef = useRef(null);
   const maximizedRef = useRef(null);
+  const volClickRef = useRef(null);
 
   useEffect(() => {
     setMeasurements([]);
@@ -1493,6 +1692,7 @@ const MPRViewer = () => {
 
       if (ev.key === 'Escape') {
         setMaximizedPane(null);
+        setViewMenu(null);
         return;
       }
 
@@ -1636,6 +1836,34 @@ const MPRViewer = () => {
     }
   };
 
+  const toggleSection = (id) => {
+    setOpenSections((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const openViewMenu = (menu) => {
+    setViewMenu(menu);
+  };
+
+  const runViewMenu = (action) => {
+    const pane = viewMenu?.pane;
+    setViewMenu(null);
+    if (action === 'nav') setTool('navigate');
+    if (action === 'length') setTool('distance');
+    if (action === 'area') setTool('area');
+    if (action === 'max' && pane) {
+      setMaximizedPane((p) => (p === pane ? null : pane));
+    }
+    if (action === 'fit') setZoom(1.35);
+    if (action === 'resetTilt') {
+      resetMprOrientation();
+      setViewEpoch((n) => n + 1);
+    }
+    if (action === 'reset3d') setCameraResetToken((n) => n + 1);
+    if (action === 'mprLines') setShowMprLines((v) => !v);
+    if (action === 'cuts') setUseCutPlanes((v) => !v);
+    if (action === 'png') exportPng();
+  };
+
   if (!volume) {
     return (
       <Container>
@@ -1654,8 +1882,11 @@ const MPRViewer = () => {
   return (
     <Container>
       <ControlSidebar>
-        <ToolGroup>
-          <GroupTitle>Cine</GroupTitle>
+        <SidebarSection
+          title="Cine"
+          open={openSections.cine}
+          onToggle={() => toggleSection('cine')}
+        >
           <Button
             $grow
             onClick={() => setPlaying((p) => !p)}
@@ -1689,10 +1920,13 @@ const MPRViewer = () => {
           <MeasureMetaLine>
             Space play/pause · ← → {playing ? 'speed' : 'frame'}
           </MeasureMetaLine>
-        </ToolGroup>
+        </SidebarSection>
 
-        <ToolGroup>
-          <GroupTitle>Planes</GroupTitle>
+        <SidebarSection
+          title="Planes"
+          open={openSections.planes}
+          onToggle={() => toggleSection('planes')}
+        >
           <SliderRow>
             <Label style={{ color: AXIS_META.sagittal.color }}>X {crosshair.x}</Label>
             <Slider
@@ -1736,10 +1970,6 @@ const MPRViewer = () => {
           >
             Reset tilt
           </Button>
-        </ToolGroup>
-
-        <ToolGroup>
-          <GroupTitle>Slice</GroupTitle>
           <SliderRow>
             <Label $wide="4.8rem">
               {slabMm < 1 ? 'Thin' : `${slabMm} mm`}
@@ -1774,10 +2004,13 @@ const MPRViewer = () => {
               MIP
             </Button>
           </ButtonRow>
-        </ToolGroup>
+        </SidebarSection>
 
-        <ToolGroup>
-          <GroupTitle>Tools</GroupTitle>
+        <SidebarSection
+          title="Tools"
+          open={openSections.tools}
+          onToggle={() => toggleSection('tools')}
+        >
           <ButtonRow>
             <Button
               $grow
@@ -1817,25 +2050,13 @@ const MPRViewer = () => {
               Clear
             </Button>
           </ButtonRow>
-          <SliderRow>
-            <Label $wide="4.5rem">Zoom {Math.round(zoom * 100)}%</Label>
-            <Slider
-              type="range"
-              min={0.4}
-              max={4}
-              step={0.05}
-              value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
-              title="MPR zoom"
-            />
-          </SliderRow>
-          <Button $grow onClick={() => setZoom(1.35)} title="Fit default zoom">
-            Fit
-          </Button>
-        </ToolGroup>
+        </SidebarSection>
 
-        <ToolGroup>
-          <GroupTitle>Measurements</GroupTitle>
+        <SidebarSection
+          title="Measurements"
+          open={openSections.measure}
+          onToggle={() => toggleSection('measure')}
+        >
           {measurements.length === 0 ? (
             <MeasureMetaLine>None yet · Length or Area on a 2D view</MeasureMetaLine>
           ) : (
@@ -1881,10 +2102,13 @@ const MPRViewer = () => {
               })}
             </MeasureList>
           )}
-        </ToolGroup>
+        </SidebarSection>
 
-        <ToolGroup>
-          <GroupTitle>Window</GroupTitle>
+        <SidebarSection
+          title="Image"
+          open={openSections.image}
+          onToggle={() => toggleSection('image')}
+        >
           <SliderRow>
             <Label $wide="3.6rem">WC {windowCenter}</Label>
             <Slider
@@ -1909,10 +2133,28 @@ const MPRViewer = () => {
               }
             />
           </SliderRow>
-        </ToolGroup>
+          <SliderRow>
+            <Label $wide="4.5rem">Zoom {Math.round(zoom * 100)}%</Label>
+            <Slider
+              type="range"
+              min={0.4}
+              max={4}
+              step={0.05}
+              value={zoom}
+              onChange={(e) => setZoom(Number(e.target.value))}
+              title="MPR zoom"
+            />
+          </SliderRow>
+          <Button $grow onClick={() => setZoom(1.35)} title="Fit default zoom">
+            Fit
+          </Button>
+        </SidebarSection>
 
-        <ToolGroup>
-          <GroupTitle>Volume</GroupTitle>
+        <SidebarSection
+          title="Volume"
+          open={openSections.volume}
+          onToggle={() => toggleSection('volume')}
+        >
           <Select
             value={colorStyle}
             onChange={(e) => {
@@ -2010,40 +2252,6 @@ const MPRViewer = () => {
             <RotateCcw size={14} />
             Reset 3D
           </Button>
-        </ToolGroup>
-
-        <ToolGroup>
-          <GroupTitle>Export</GroupTitle>
-          <ButtonRow>
-            <Button
-              $grow
-              onClick={exportPng}
-              disabled={Boolean(exporting)}
-              title="Screenshot of the current views (PNG)"
-            >
-              <Camera size={14} />
-              PNG
-            </Button>
-            <Button
-              $grow
-              onClick={exportAvi}
-              disabled={Boolean(exporting) || volume.dims.t <= 1}
-              title="Cine clip as Motion-JPEG AVI"
-            >
-              <Film size={14} />
-              {exporting?.kind === 'avi'
-                ? `${exporting.i}/${exporting.n}`
-                : 'AVI'}
-            </Button>
-          </ButtonRow>
-          <Button $grow onClick={exportFrame} disabled={Boolean(exporting)}>
-            <Download size={16} />
-            NRRD
-          </Button>
-        </ToolGroup>
-
-        <ToolGroup>
-          <GroupTitle>Light</GroupTitle>
           <SliderRow>
             <Label>az</Label>
             <Slider
@@ -2078,7 +2286,40 @@ const MPRViewer = () => {
               title="Light intensity"
             />
           </SliderRow>
-        </ToolGroup>
+        </SidebarSection>
+
+        <SidebarSection
+          title="Export"
+          open={openSections.export}
+          onToggle={() => toggleSection('export')}
+        >
+          <ButtonRow>
+            <Button
+              $grow
+              onClick={exportPng}
+              disabled={Boolean(exporting)}
+              title="Screenshot of the current views (PNG)"
+            >
+              <Camera size={14} />
+              PNG
+            </Button>
+            <Button
+              $grow
+              onClick={exportAvi}
+              disabled={Boolean(exporting) || volume.dims.t <= 1}
+              title="Cine clip as Motion-JPEG AVI"
+            >
+              <Film size={14} />
+              {exporting?.kind === 'avi'
+                ? `${exporting.i}/${exporting.n}`
+                : 'AVI'}
+            </Button>
+          </ButtonRow>
+          <Button $grow onClick={exportFrame} disabled={Boolean(exporting)}>
+            <Download size={16} />
+            NRRD
+          </Button>
+        </SidebarSection>
 
         <Meta>
           {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
@@ -2120,15 +2361,37 @@ const MPRViewer = () => {
             onToggleMaximize={() =>
               setMaximizedPane((p) => (p === axis ? null : axis))
             }
+            onOpenMenu={openViewMenu}
           />
         ))}
         <Pane
           $borderColor="#3d9a8b"
           $maximized={maximizedPane === 'volume'}
           $hidden={Boolean(maximizedPane && maximizedPane !== 'volume')}
-          onDoubleClick={(e) => {
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
             if (e.target.closest('button')) return;
-            setMaximizedPane((p) => (p === 'volume' ? null : 'volume'));
+            volClickRef.current = { x: e.clientX, y: e.clientY, consumed: false };
+          }}
+          onPointerMove={(e) => {
+            const start = volClickRef.current;
+            if (!start || start.consumed) return;
+            if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6) {
+              start.consumed = true;
+            }
+          }}
+          onPointerUp={(e) => {
+            const start = volClickRef.current;
+            volClickRef.current = null;
+            if (e.button !== 0 || !start || start.consumed) return;
+            if (e.target.closest('button')) return;
+            if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6) return;
+            openViewMenu({ x: e.clientX, y: e.clientY, pane: 'volume' });
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            if (e.target.closest('button')) return;
+            openViewMenu({ x: e.clientX, y: e.clientY, pane: 'volume' });
           }}
         >
           <PaneLabel $color="#3d9a8b">3D Volume</PaneLabel>
@@ -2215,6 +2478,15 @@ const MPRViewer = () => {
         />
       ) : null}
       </Viewport>
+      <ViewContextMenu
+        menu={viewMenu}
+        tool={tool}
+        maximized={viewMenu ? maximizedPane === viewMenu.pane : false}
+        showMprLines={showMprLines}
+        useCutPlanes={useCutPlanes}
+        onAction={runViewMenu}
+        onClose={() => setViewMenu(null)}
+      />
     </Container>
   );
 };
