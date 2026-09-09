@@ -585,14 +585,6 @@ function MPRSlicePane({
         drawHandle(s.dirs.b, s.dirs.b.color);
       }
 
-      ctx.fillStyle = '#fff';
-      ctx.strokeStyle = AXIS_META[axis].color;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
       const drawPts = (points, cursor) => {
         const all = cursor ? [...points, cursor] : points;
         return all.map((mm) => {

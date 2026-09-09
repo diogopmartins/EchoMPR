@@ -469,10 +469,6 @@ function MprPlanes({ volume, mprCenter, mprBasis }) {
       {planes.map((p) => (
         <MprPlaneOverlay key={p.key} points={p.points} color={p.color} />
       ))}
-      <mesh position={origin} renderOrder={4}>
-        <sphereGeometry args={[0.016, 16, 16]} />
-        <meshBasicMaterial color="#ffffff" />
-      </mesh>
     </group>
   );
 }
@@ -879,10 +875,6 @@ function VolumeMesh({
         scale={scale}
       />
       <axesHelper args={[0.16]} position={[-0.46, -0.46, -0.46]} />
-      <mesh position={lightPos}>
-        <sphereGeometry args={[0.028, 16, 16]} />
-        <meshBasicMaterial color="#ffe6c4" transparent opacity={0.85} />
-      </mesh>
     </group>
   );
 }
