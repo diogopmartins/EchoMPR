@@ -23,6 +23,11 @@ import {
   sub as subVec,
 } from '../utils/mprGeometry';
 import { exportToNRRD } from '../utils/dicomParser';
+import {
+  getVolumeEcg,
+  frameToSampleIndex,
+  sampleIndexToFrame,
+} from '../utils/ecg';
 import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
 
 const Container = styled.div`
@@ -53,6 +58,32 @@ const Viewport = styled.div`
   min-height: 0;
   display: flex;
   flex-direction: column;
+`;
+
+const EcgBar = styled.div`
+  flex-shrink: 0;
+  height: 76px;
+  background: #080c10;
+  border-top: 1px solid #2a3542;
+  position: relative;
+`;
+
+const EcgCanvas = styled.canvas`
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: pointer;
+`;
+
+const EcgLegend = styled.div`
+  position: absolute;
+  top: 5px;
+  left: 10px;
+  z-index: 1;
+  font-size: 0.7rem;
+  color: #8ad4c4;
+  pointer-events: none;
+  text-shadow: 0 1px 2px #000;
 `;
 
 const ToolGroup = styled.div`
@@ -272,6 +303,8 @@ const AXIS_META = {
   axial: { label: 'Axial (Z)', short: 'Ax', color: '#1e88e5', key: 'z' },
 };
 
+const CINE_RATES = [0.25, 0.5, 0.75, 1];
+
 function getViewLayout(container, canvas) {
   const rect = container.getBoundingClientRect();
   const sw = canvas.width || 1;
@@ -406,6 +439,7 @@ function MPRSlicePane({
   onSelectMeasurement,
   onAddMeasurement,
   onUpdateMeasurement,
+  onLiveDraftChange,
   onClearDraftSignal,
 }) {
   const canvasRef = useRef(null);
@@ -427,11 +461,13 @@ function MPRSlicePane({
 
   useEffect(() => {
     setDraft(null);
-  }, [tool, onClearDraftSignal]);
+    onLiveDraftChange?.(null);
+  }, [tool, onClearDraftSignal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setDraft(null);
-  }, [timeIndex]);
+    onLiveDraftChange?.(null);
+  }, [timeIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resolveViewOrigin = useCallback(() => {
     const spec = viewSpec(axis);
@@ -840,6 +876,12 @@ function MPRSlicePane({
       if (tool === 'distance') {
         if (!draft || draft.type !== 'distance') {
           setDraft({ axis, type: 'distance', points: [mm], cursor: mm });
+          onLiveDraftChange?.({
+            axis,
+            type: 'distance',
+            points: [mm],
+            cursor: mm,
+          });
         } else {
           onAddMeasurement({
             id: `${axis}-dist-${Date.now()}`,
@@ -848,18 +890,46 @@ function MPRSlicePane({
             points: [draft.points[0], mm],
           });
           setDraft(null);
+          onLiveDraftChange?.({
+            axis,
+            type: 'distance',
+            points: [],
+            cursor: mm,
+          });
         }
         return;
       }
       if (tool === 'area') {
         if (!draft || draft.type !== 'area') {
           setDraft({ axis, type: 'area', points: [mm], cursor: mm });
+          onLiveDraftChange?.({
+            axis,
+            type: 'area',
+            points: [mm],
+            cursor: mm,
+          });
         } else {
           const first = draft.points[0];
           const close =
             draft.points.length >= 3 && distanceMm(first, mm) < (slice.pixelMm || 1) * 14;
-          if (close) finishArea(draft.points);
-          else setDraft({ ...draft, points: [...draft.points, mm], cursor: mm });
+          if (close) {
+            finishArea(draft.points);
+            onLiveDraftChange?.({
+              axis,
+              type: 'area',
+              points: [],
+              cursor: mm,
+            });
+          } else {
+            const points = [...draft.points, mm];
+            setDraft({ ...draft, points, cursor: mm });
+            onLiveDraftChange?.({
+              axis,
+              type: 'area',
+              points,
+              cursor: mm,
+            });
+          }
         }
       }
       return;
@@ -906,10 +976,16 @@ function MPRSlicePane({
     if (tool !== 'navigate') {
       const hover = hitMeasurement(pos);
       e.currentTarget.style.cursor = hover ? 'grab' : 'crosshair';
+      const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
       if (draftRef.current && draftRef.current.axis === axis) {
-        const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
         setDraft((d) => (d ? { ...d, cursor: mm } : d));
       }
+      onLiveDraftChange?.({
+        axis,
+        type: (draftRef.current && draftRef.current.type) || tool,
+        points: draftRef.current?.points || [],
+        cursor: mm,
+      });
       return;
     }
 
@@ -1013,6 +1089,7 @@ function MPRSlicePane({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerLeave={() => onLiveDraftChange?.(null)}
         onDoubleClick={onDoubleClick}
         title={hint}
         style={{
@@ -1023,6 +1100,166 @@ function MPRSlicePane({
         }}
       />
     </Pane>
+  );
+}
+
+function EcgStrip({ ecg, timeIndex, frameCount, onSeek }) {
+  const canvasRef = useRef(null);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const wrap = wrapRef.current;
+    if (!canvas || !wrap || !ecg?.samples?.length) return undefined;
+
+    const draw = () => {
+      const rect = wrap.getBoundingClientRect();
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = Math.max(8, Math.round(rect.width));
+      const h = Math.max(8, Math.round(rect.height));
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#080c10';
+      ctx.fillRect(0, 0, w, h);
+
+      const samples = ecg.samples;
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < samples.length; i++) {
+        const v = samples[i];
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      const span = max - min || 1;
+      const padY = 10;
+      const padX = 8;
+      const usableW = w - padX * 2;
+      const usableH = h - padY * 2;
+
+      ctx.strokeStyle = '#1c2a32';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+      ctx.stroke();
+
+      const xAt = (i) => padX + (i / Math.max(1, samples.length - 1)) * usableW;
+      const yAt = (v) => padY + (1 - (v - min) / span) * usableH;
+
+      ctx.beginPath();
+      for (let i = 0; i < samples.length; i++) {
+        const x = xAt(i);
+        const y = yAt(samples[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      const lastX = xAt(samples.length - 1);
+      ctx.lineTo(lastX, h - 2);
+      ctx.lineTo(xAt(0), h - 2);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(61, 154, 139, 0.22)';
+      ctx.fill();
+
+      ctx.strokeStyle = '#6ee0cc';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < samples.length; i++) {
+        const x = xAt(i);
+        const y = yAt(samples[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      if (ecg.beats?.length) {
+        ctx.fillStyle = '#e07a5f';
+        ecg.beats.forEach((b) => {
+          const x = xAt(b);
+          ctx.beginPath();
+          ctx.moveTo(x, 3);
+          ctx.lineTo(x - 4, 11);
+          ctx.lineTo(x + 4, 11);
+          ctx.closePath();
+          ctx.fill();
+        });
+      }
+
+      const si = frameToSampleIndex(ecg, timeIndex, frameCount);
+      const px = xAt(si);
+      ctx.strokeStyle = '#ffe082';
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, h);
+      ctx.stroke();
+    };
+
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [ecg, timeIndex, frameCount]);
+
+  const seekFromEvent = (e) => {
+    if (!ecg?.samples?.length) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const si = Math.round(x * (ecg.samples.length - 1));
+    onSeek(sampleIndexToFrame(ecg, si, frameCount));
+  };
+
+  const onPointerDown = (e) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    seekFromEvent(e);
+  };
+
+  const bpm =
+    ecg?.heartRateBpm && Number.isFinite(ecg.heartRateBpm)
+      ? Math.round(ecg.heartRateBpm)
+      : null;
+  const title =
+    ecg?.source === 'dicom-waveform'
+      ? `${ecg.label || 'ECG'}${bpm ? ` · ${bpm} bpm` : ''}`
+      : `Cardiac cycle (no ECG in file)${bpm ? ` · ${bpm} bpm` : ''}`;
+
+  const samp = ecg?.samples;
+  let sMin = 0;
+  let sMax = 0;
+  if (samp?.length) {
+    sMin = samp[0];
+    sMax = samp[0];
+    for (let i = 1; i < samp.length; i++) {
+      if (samp[i] < sMin) sMin = samp[i];
+      if (samp[i] > sMax) sMax = samp[i];
+    }
+  }
+
+  return (
+    <EcgBar
+      ref={wrapRef}
+      title="Click to jump to a frame"
+      data-ecg-source={ecg?.source || ''}
+      data-ecg-beats={(ecg?.beats || []).join(',')}
+      data-ecg-bpm={bpm || ''}
+      data-ecg-n={samp?.length || 0}
+      data-ecg-range={`${sMin.toFixed(3)}:${sMax.toFixed(3)}`}
+    >
+      <EcgLegend>{title}</EcgLegend>
+      <EcgCanvas
+        ref={canvasRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={(e) => e.buttons === 1 && seekFromEvent(e)}
+      />
+    </EcgBar>
   );
 }
 
@@ -1045,6 +1282,7 @@ const MPRViewer = () => {
   } = useEcho();
 
   const [playing, setPlaying] = useState(false);
+  const [cineRate, setCineRate] = useState(1);
   const [opacity, setOpacity] = useState(0.72);
   const [renderMode, setRenderMode] = useState('dvr');
   const [colorStyle, setColorStyle] = useState('glass');
@@ -1058,6 +1296,7 @@ const MPRViewer = () => {
   const [tool, setTool] = useState('navigate');
   const [measurements, setMeasurements] = useState([]);
   const [selectedMeasurementId, setSelectedMeasurementId] = useState(null);
+  const [liveDraft, setLiveDraft] = useState(null);
   const [clearDraftSignal, setClearDraftSignal] = useState(0);
   const timeRef = useRef(timeIndex);
   const labelCounters = useRef({ d: 0, a: 0 });
@@ -1065,20 +1304,68 @@ const MPRViewer = () => {
   useEffect(() => {
     setMeasurements([]);
     setSelectedMeasurementId(null);
+    setLiveDraft(null);
     setTool('navigate');
     setClearDraftSignal((n) => n + 1);
     labelCounters.current = { d: 0, a: 0 };
+    setPlaying(false);
+    setCineRate(1);
   }, [volume]);
   timeRef.current = timeIndex;
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
 
   useEffect(() => {
     if (!playing || !volume || volume.dims.t <= 1) return undefined;
-    const ms = volume.frameTimeMs || 50;
+    const ms = Math.max(16, (volume.frameTimeMs || 50) / cineRate);
     const id = setInterval(() => {
       setTimeIndex((timeRef.current + 1) % volume.dims.t);
     }, ms);
     return () => clearInterval(id);
-  }, [playing, volume, setTimeIndex]);
+  }, [playing, cineRate, volume, setTimeIndex]);
+
+  useEffect(() => {
+    const isTypingTarget = (el) => {
+      if (!el || el === document.body) return false;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (tag === 'INPUT' && el.type !== 'range') return true;
+      return el.isContentEditable;
+    };
+
+    const onKey = (ev) => {
+      if (isTypingTarget(ev.target)) return;
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (!volume || volume.dims.t <= 1) return;
+
+      if (ev.code === 'Space' || ev.key === ' ') {
+        ev.preventDefault();
+        if (ev.repeat) return;
+        setPlaying((p) => !p);
+        return;
+      }
+
+      if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+      ev.preventDefault();
+      const dir = ev.key === 'ArrowRight' ? 1 : -1;
+      const n = volume.dims.t;
+
+      if (playingRef.current) {
+        if (ev.repeat) return;
+        setCineRate((r) => {
+          const idx = CINE_RATES.indexOf(r);
+          const i = idx < 0 ? CINE_RATES.length - 1 : idx;
+          return CINE_RATES[Math.max(0, Math.min(CINE_RATES.length - 1, i + dir))];
+        });
+        return;
+      }
+
+      setTimeIndex((timeRef.current + dir + n) % n);
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [volume, setTimeIndex]);
 
   const addMeasurement = (partial) => {
     const isDist = partial.type === 'distance';
@@ -1141,6 +1428,7 @@ const MPRViewer = () => {
 
   const sizeMm = physicalSizeMm(volume);
   const meta = volume.meta || {};
+  const ecg = getVolumeEcg(volume);
 
   return (
     <Container>
@@ -1151,10 +1439,10 @@ const MPRViewer = () => {
             $grow
             onClick={() => setPlaying((p) => !p)}
             disabled={volume.dims.t <= 1}
-            title="Cine play/pause"
+            title="Play/pause (Space). Paused: ← → step frame. Playing: ← slower, → faster up to 1×"
           >
             {playing ? <Pause size={16} /> : <Play size={16} />}
-            Cine
+            Cine {cineRate === 1 ? '1×' : `${cineRate}×`}
           </Button>
           <SliderRow>
             <Label $wide="4.2rem">
@@ -1171,6 +1459,17 @@ const MPRViewer = () => {
               }}
             />
           </SliderRow>
+          {ecg ? (
+            <MeasureMetaLine>
+              {ecg.source === 'dicom-waveform'
+                ? ecg.label || 'ECG'
+                : 'Cycle from 4D motion'}
+              {ecg.heartRateBpm ? ` · ${Math.round(ecg.heartRateBpm)} bpm` : ''}
+            </MeasureMetaLine>
+          ) : null}
+          <MeasureMetaLine>
+            Space play/pause · ← → {playing ? 'speed' : 'frame'}
+          </MeasureMetaLine>
         </ToolGroup>
 
         <ToolGroup>
@@ -1492,6 +1791,7 @@ const MPRViewer = () => {
           onSelectMeasurement={setSelectedMeasurementId}
           onAddMeasurement={addMeasurement}
           onUpdateMeasurement={updateMeasurement}
+          onLiveDraftChange={setLiveDraft}
           onClearDraftSignal={clearDraftSignal}
         />
         <MPRSlicePane
@@ -1513,6 +1813,7 @@ const MPRViewer = () => {
           onSelectMeasurement={setSelectedMeasurementId}
           onAddMeasurement={addMeasurement}
           onUpdateMeasurement={updateMeasurement}
+          onLiveDraftChange={setLiveDraft}
           onClearDraftSignal={clearDraftSignal}
         />
         <MPRSlicePane
@@ -1534,6 +1835,7 @@ const MPRViewer = () => {
           onSelectMeasurement={setSelectedMeasurementId}
           onAddMeasurement={addMeasurement}
           onUpdateMeasurement={updateMeasurement}
+          onLiveDraftChange={setLiveDraft}
           onClearDraftSignal={clearDraftSignal}
         />
         <Pane>
@@ -1573,10 +1875,22 @@ const MPRViewer = () => {
               lightIntensity={lightIntensity}
               measurements={measurements}
               selectedMeasurementId={selectedMeasurementId}
+              liveDraft={liveDraft}
             />
           </Canvas>
         </Pane>
       </Grid>
+      {ecg ? (
+        <EcgStrip
+          ecg={ecg}
+          timeIndex={timeIndex}
+          frameCount={volume.dims.t}
+          onSeek={(t) => {
+            setPlaying(false);
+            setTimeIndex(t);
+          }}
+        />
+      ) : null}
       </Viewport>
     </Container>
   );

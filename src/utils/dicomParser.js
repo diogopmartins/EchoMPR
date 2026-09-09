@@ -8,6 +8,7 @@ import {
   renderSliceToCanvas,
   physicalSizeMm,
 } from './philipsVolume';
+import { extractEcg } from './ecg';
 
 export {
   buildPhilipsVolume,
@@ -66,6 +67,11 @@ export const parseDicomFile = async (file, options = {}) => {
 
   if (volume) {
     dicomData.pixelArray = volume.voxels;
+    try {
+      volume.ecg = extractEcg(dataSet, arrayBuffer, volume);
+    } catch (err) {
+      console.warn('ECG / cycle extract failed:', err.message);
+    }
   } else if (dataSet.elements.x7fe00010) {
     const pe = dataSet.elements.x7fe00010;
     dicomData.pixelArray = new Uint8Array(arrayBuffer, pe.dataOffset, pe.length);

@@ -502,14 +502,66 @@ function VolumeFrame({ useCutPlanes, cutPlane }) {
   );
 }
 
-function MeasurementOverlay({ volume, measurements, timeIndex, selectedId }) {
+function MeasureBall({ position, color, radius, invScale, live }) {
+  return (
+    <group position={position} scale={invScale}>
+      <mesh scale={[radius, radius, radius]} renderOrder={8}>
+        <sphereGeometry args={[1, 40, 32]} />
+        <meshPhongMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={live ? 0.18 : 0.06}
+          specular="#ffffff"
+          shininess={live ? 140 : 95}
+          toneMapped={false}
+          depthTest={false}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh
+        position={[radius * 0.32, radius * 0.38, radius * 0.28]}
+        scale={[radius * 0.26, radius * 0.26, radius * 0.26]}
+        renderOrder={9}
+      >
+        <sphereGeometry args={[1, 16, 12]} />
+        <meshBasicMaterial
+          color="#ffffff"
+          transparent
+          opacity={live ? 0.72 : 0.55}
+          depthTest={false}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function MeasurementOverlay({
+  volume,
+  measurements,
+  timeIndex,
+  selectedId,
+  liveDraft,
+  scale,
+}) {
   const visible = (measurements || []).filter((m) => m.timeIndex === timeIndex);
-  if (!visible.length) return null;
+  const invScale = useMemo(
+    () => [1 / (scale[0] || 1), 1 / (scale[1] || 1), 1 / (scale[2] || 1)],
+    [scale]
+  );
+
+  const draftPts = liveDraft?.points || [];
+  const cursor = liveDraft?.cursor;
+  const hasLive = Boolean(cursor || draftPts.length);
+  if (!visible.length && !hasLive) return null;
+
+  const toBox = (mm) => mmToUnitBox(volume, mm);
 
   return (
     <group>
       {visible.map((m) => {
-        const pts = m.points.map((p) => mmToUnitBox(volume, p));
+        const pts = m.points.map(toBox);
         const selected = m.id === selectedId;
         const color = selected ? '#fff176' : '#ffd54f';
         const closed = m.type === 'area' && pts.length >= 3;
@@ -531,10 +583,13 @@ function MeasurementOverlay({ volume, measurements, timeIndex, selectedId }) {
               />
             )}
             {pts.map((p, i) => (
-              <mesh key={i} position={p} renderOrder={6}>
-                <sphereGeometry args={[selected ? 0.014 : 0.011, 12, 12]} />
-                <meshBasicMaterial color={color} depthTest={false} />
-              </mesh>
+              <MeasureBall
+                key={i}
+                position={p}
+                color={color}
+                radius={selected ? 0.038 : 0.034}
+                invScale={invScale}
+              />
             ))}
             <Html
               position={mid}
@@ -555,6 +610,55 @@ function MeasurementOverlay({ volume, measurements, timeIndex, selectedId }) {
           </group>
         );
       })}
+
+      {hasLive && (
+        <group>
+          {draftPts.length >= 2 && (
+            <Line
+              points={
+                liveDraft.type === 'area' && draftPts.length >= 3
+                  ? [...draftPts.map(toBox), toBox(draftPts[0])]
+                  : draftPts.map(toBox)
+              }
+              color="#ffcc80"
+              lineWidth={1.8}
+              renderOrder={6}
+              depthTest={false}
+              transparent
+              opacity={0.85}
+            />
+          )}
+          {cursor && draftPts.length >= 1 && (
+            <Line
+              points={[toBox(draftPts[draftPts.length - 1]), toBox(cursor)]}
+              color="#7ee8ff"
+              lineWidth={1.6}
+              renderOrder={6}
+              depthTest={false}
+              transparent
+              opacity={0.8}
+            />
+          )}
+          {draftPts.map((p, i) => (
+            <MeasureBall
+              key={`draft-${i}`}
+              position={toBox(p)}
+              color="#ffb74d"
+              radius={0.034}
+              invScale={invScale}
+            />
+          ))}
+          {cursor && (
+            <MeasureBall
+              position={toBox(cursor)}
+              color="#00e5ff"
+              radius={0.046}
+              invScale={invScale}
+              live
+            />
+          )}
+        </group>
+      )}
     </group>
   );
 }
@@ -578,6 +682,7 @@ function VolumeMesh({
   mprBasis,
   measurements,
   selectedMeasurementId,
+  liveDraft,
 }) {
   const materialRef = useRef();
   const { gl, size } = useThree();
@@ -769,6 +874,8 @@ function VolumeMesh({
         measurements={measurements}
         timeIndex={timeIndex}
         selectedId={selectedMeasurementId}
+        liveDraft={liveDraft}
+        scale={scale}
       />
       <axesHelper args={[0.16]} position={[-0.46, -0.46, -0.46]} />
       <mesh position={lightPos}>
@@ -797,6 +904,7 @@ const VolumeRenderer = ({
   mprBasis,
   measurements,
   selectedMeasurementId,
+  liveDraft,
 }) => {
   const [interactive, setInteractive] = useState(false);
 
@@ -804,6 +912,9 @@ const VolumeRenderer = ({
 
   return (
     <>
+      <ambientLight intensity={0.5} />
+      <hemisphereLight args={['#f2fff8', '#243040', 0.75]} />
+      <directionalLight position={[1.15, 1.45, 1.05]} intensity={1.4} />
       <VolumeMesh
         volume={volume}
         timeIndex={timeIndex}
@@ -823,6 +934,7 @@ const VolumeRenderer = ({
         mprBasis={mprBasis}
         measurements={measurements}
         selectedMeasurementId={selectedMeasurementId}
+        liveDraft={liveDraft}
       />
       <OrbitControls
         makeDefault
