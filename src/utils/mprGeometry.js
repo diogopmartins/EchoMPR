@@ -336,6 +336,54 @@ export function distanceMm(a, b) {
   return vecLen(sub(a, b));
 }
 
+function copyVec3(v) {
+  return [v[0], v[1], v[2]];
+}
+
+/** Freeze the 2D plane a measurement was drawn on so it can hide/restore later. */
+export function snapshotMeasurementPlane(volume, axis, mprCenter, mprBasis) {
+  const spec = viewSpec(axis);
+  const normal = normalize(mprBasis[spec.normalKey]);
+  return {
+    axis,
+    normal: copyVec3(normal),
+    originMm: copyVec3(voxelToMm(volume, mprCenter)),
+    center: { x: mprCenter.x, y: mprCenter.y, z: mprCenter.z },
+    basis: {
+      x: copyVec3(mprBasis.x),
+      y: copyVec3(mprBasis.y),
+      z: copyVec3(mprBasis.z),
+    },
+  };
+}
+
+/**
+ * True when the current view is the same 2D plane the measurement was made on
+ * (same orientation and same offset along the plane normal). In-plane panning
+ * keeps the measurement visible; tilt or scroll along the normal hides it.
+ */
+export function measurementOnCurrentPlane(volume, measurement, mprCenter, mprBasis) {
+  if (!measurement?.normal || !measurement?.originMm) return false;
+  const spec = viewSpec(measurement.axis);
+  const n = normalize(mprBasis[spec.normalKey]);
+  const n0 = normalize(measurement.normal);
+  if (Math.abs(Math.abs(dot(n, n0)) - 1) > 0.02) return false;
+  const dist = Math.abs(dot(sub(voxelToMm(volume, mprCenter), measurement.originMm), n0));
+  const sp = spacingMm(volume);
+  const tol = Math.max(sp.x, sp.y, sp.z) * 0.85;
+  return dist <= tol;
+}
+
+/** Millimetres → unit cube coords used by the 3D volume mesh ([-0.5, 0.5]). */
+export function mmToUnitBox(volume, mm) {
+  const v = mmToVoxel(volume, mm);
+  return [
+    (v.x + 0.5) / volume.dims.x - 0.5,
+    (v.y + 0.5) / volume.dims.y - 0.5,
+    (v.z + 0.5) / volume.dims.z - 0.5,
+  ];
+}
+
 /** Planar polygon area (mm²) using the slice's in-plane axes. */
 export function polygonAreaMm2(points, right, down) {
   if (!points || points.length < 3) return 0;

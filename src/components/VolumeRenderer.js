@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { Line, OrbitControls } from '@react-three/drei';
+import { Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { getVolumeAtTime, physicalSizeMm } from '../utils/philipsVolume';
-import { cross as cross3, normalize as normalize3 } from '../utils/mprGeometry';
+import { cross as cross3, mmToUnitBox, normalize as normalize3 } from '../utils/mprGeometry';
 
 const vertexShader = /* glsl */ `
 out vec3 vOrigin;
@@ -502,6 +502,63 @@ function VolumeFrame({ useCutPlanes, cutPlane }) {
   );
 }
 
+function MeasurementOverlay({ volume, measurements, timeIndex, selectedId }) {
+  const visible = (measurements || []).filter((m) => m.timeIndex === timeIndex);
+  if (!visible.length) return null;
+
+  return (
+    <group>
+      {visible.map((m) => {
+        const pts = m.points.map((p) => mmToUnitBox(volume, p));
+        const selected = m.id === selectedId;
+        const color = selected ? '#fff176' : '#ffd54f';
+        const closed = m.type === 'area' && pts.length >= 3;
+        const linePts = closed ? [...pts, pts[0]] : pts;
+        const mid = pts
+          .reduce((s, p) => [s[0] + p[0], s[1] + p[1], s[2] + p[2]], [0, 0, 0])
+          .map((v) => v / pts.length);
+        return (
+          <group key={m.id}>
+            {linePts.length >= 2 && (
+              <Line
+                points={linePts}
+                color={color}
+                lineWidth={selected ? 2.6 : 2}
+                renderOrder={5}
+                depthTest={false}
+                transparent
+                opacity={0.95}
+              />
+            )}
+            {pts.map((p, i) => (
+              <mesh key={i} position={p} renderOrder={6}>
+                <sphereGeometry args={[selected ? 0.014 : 0.011, 12, 12]} />
+                <meshBasicMaterial color={color} depthTest={false} />
+              </mesh>
+            ))}
+            <Html
+              position={mid}
+              center
+              sprite
+              style={{
+                pointerEvents: 'none',
+                font: '600 11px "IBM Plex Sans", "Segoe UI", sans-serif',
+                color: '#ffe082',
+                background: 'rgba(8, 12, 16, 0.78)',
+                padding: '2px 5px',
+                borderRadius: 3,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {m.label}
+            </Html>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
 function VolumeMesh({
   volume,
   timeIndex,
@@ -519,6 +576,8 @@ function VolumeMesh({
   showMprLines,
   mprCenter,
   mprBasis,
+  measurements,
+  selectedMeasurementId,
 }) {
   const materialRef = useRef();
   const { gl, size } = useThree();
@@ -705,6 +764,12 @@ function VolumeMesh({
           mprBasis={mprBasis}
         />
       )}
+      <MeasurementOverlay
+        volume={volume}
+        measurements={measurements}
+        timeIndex={timeIndex}
+        selectedId={selectedMeasurementId}
+      />
       <axesHelper args={[0.16]} position={[-0.46, -0.46, -0.46]} />
       <mesh position={lightPos}>
         <sphereGeometry args={[0.028, 16, 16]} />
@@ -730,6 +795,8 @@ const VolumeRenderer = ({
   showMprLines = false,
   mprCenter,
   mprBasis,
+  measurements,
+  selectedMeasurementId,
 }) => {
   const [interactive, setInteractive] = useState(false);
 
@@ -754,6 +821,8 @@ const VolumeRenderer = ({
         showMprLines={showMprLines}
         mprCenter={mprCenter}
         mprBasis={mprBasis}
+        measurements={measurements}
+        selectedMeasurementId={selectedMeasurementId}
       />
       <OrbitControls
         makeDefault

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { Canvas } from '@react-three/fiber';
-import { Play, Pause, Download } from 'lucide-react';
+import { Play, Pause, Download, Trash2 } from 'lucide-react';
 import { useEcho } from '../context/EchoContext';
 import { renderSliceToCanvas, physicalSizeMm } from '../utils/philipsVolume';
 import {
@@ -16,6 +16,11 @@ import {
   worldMmToImage,
   distanceMm,
   polygonAreaMm2,
+  planeAxes,
+  snapshotMeasurementPlane,
+  measurementOnCurrentPlane,
+  add as addVec,
+  sub as subVec,
 } from '../utils/mprGeometry';
 import { exportToNRRD } from '../utils/dicomParser';
 import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
@@ -23,36 +28,77 @@ import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
 const Container = styled.div`
   height: 100%;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: #0f1419;
   color: #e8e6e3;
   font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  min-height: 0;
 `;
 
-const Toolbar = styled.div`
+const ControlSidebar = styled.aside`
+  width: 248px;
+  flex-shrink: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1rem;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 0.85rem 0.8rem 1rem;
   background: #1a222c;
-  border-bottom: 1px solid #2a3542;
+  border-right: 1px solid #2a3542;
+  overflow-y: auto;
+`;
+
+const Viewport = styled.div`
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 `;
 
 const ToolGroup = styled.div`
   display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid #243040;
+
+  &:last-of-type {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+`;
+
+const GroupTitle = styled.div`
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7a8a99;
+  font-weight: 600;
+`;
+
+const SliderRow = styled.div`
+  display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
+`;
+
+const ButtonRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 `;
 
 const Label = styled.label`
   font-size: 0.75rem;
   color: #9aa5b1;
   white-space: nowrap;
+  min-width: ${(p) => p.$wide || '4.6rem'};
+  flex-shrink: 0;
 `;
 
 const Slider = styled.input`
-  width: 120px;
+  flex: 1;
+  min-width: 0;
   accent-color: #3d9a8b;
 `;
 
@@ -61,12 +107,15 @@ const Button = styled.button`
   border: 1px solid ${(p) => (p.$active ? '#4db8a6' : '#3a4a5c')};
   color: #e8e6e3;
   border-radius: 6px;
-  padding: 0.4rem 0.65rem;
+  padding: 0.35rem 0.5rem;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
+  justify-content: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  flex: ${(p) => (p.$grow ? '1 1 auto' : '0 1 auto')};
+  min-width: 0;
 
   &:hover {
     background: ${(p) => (p.$active ? '#45a994' : '#2e3d50')};
@@ -86,12 +135,66 @@ const Select = styled.select`
   padding: 0.35rem 0.5rem;
   font-size: 0.85rem;
   cursor: pointer;
+  width: 100%;
 `;
 
 const Meta = styled.div`
-  margin-left: auto;
-  font-size: 0.8rem;
+  margin-top: auto;
+  padding-top: 0.6rem;
+  font-size: 0.72rem;
   color: #9aa5b1;
+  line-height: 1.45;
+`;
+
+const MeasureList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 11rem;
+  overflow-y: auto;
+`;
+
+const MeasureRow = styled.div`
+  display: grid;
+  grid-template-columns: 2.1rem 1fr auto;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  text-align: left;
+  background: ${(p) => (p.$active ? '#2a4a44' : '#243040')};
+  border: 1px solid ${(p) => (p.$active ? '#4db8a6' : p.$visible ? '#3a4a5c' : '#2a3542')};
+  color: ${(p) => (p.$visible ? '#e8e6e3' : '#7a8a99')};
+  border-radius: 6px;
+  padding: 0.28rem 0.35rem 0.28rem 0.45rem;
+  cursor: pointer;
+  font-size: 0.75rem;
+`;
+
+const MeasureValue = styled.span`
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const MeasureMetaLine = styled.span`
+  display: block;
+  font-size: 0.65rem;
+  color: #7a8a99;
+`;
+
+const MeasureDelete = styled.span`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: #9aa5b1;
+
+  &:hover {
+    background: #3a2a30;
+    color: #f0b4b4;
+  }
 `;
 
 const Grid = styled.div`
@@ -164,9 +267,9 @@ const Empty = styled.div`
 
 // Standard MPR RGB: sagittal=red (X), coronal=green (Y), axial=blue (Z)
 const AXIS_META = {
-  sagittal: { label: 'Sagittal (X)', color: '#e53935', key: 'x' },
-  coronal: { label: 'Coronal (Y)', color: '#43a047', key: 'y' },
-  axial: { label: 'Axial (Z)', color: '#1e88e5', key: 'z' },
+  sagittal: { label: 'Sagittal (X)', short: 'Sag', color: '#e53935', key: 'x' },
+  coronal: { label: 'Coronal (Y)', short: 'Cor', color: '#43a047', key: 'y' },
+  axial: { label: 'Axial (Z)', short: 'Ax', color: '#1e88e5', key: 'z' },
 };
 
 function getViewLayout(container, canvas) {
@@ -259,6 +362,31 @@ function drawMeasureLabel(ctx, x, y, text) {
   ctx.fillText(text, lx + padX, ly + h / 2);
 }
 
+function distToSegment(px, py, ax, ay, bx, by) {
+  const vx = bx - ax;
+  const vy = by - ay;
+  const l2 = vx * vx + vy * vy || 1;
+  const t = Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / l2));
+  return Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
+}
+
+function measurementCaption(m) {
+  if (m.type === 'distance') {
+    return formatDistance(distanceMm(m.points[0], m.points[1]));
+  }
+  const spec = viewSpec(m.axis);
+  const { right, down } = planeAxes(m.normal || [0, 0, 1], spec.worldUp);
+  return formatArea(polygonAreaMm2(m.points, right, down));
+}
+
+function isSliceMeasurementVisible(m, axis, timeIndex, volume, mprCenter, mprBasis) {
+  return (
+    m.axis === axis &&
+    m.timeIndex === timeIndex &&
+    measurementOnCurrentPlane(volume, m, mprCenter, mprBasis)
+  );
+}
+
 function MPRSlicePane({
   axis,
   volume,
@@ -274,7 +402,10 @@ function MPRSlicePane({
   viewEpoch,
   tool,
   measurements,
+  selectedMeasurementId,
+  onSelectMeasurement,
   onAddMeasurement,
+  onUpdateMeasurement,
   onClearDraftSignal,
 }) {
   const canvasRef = useRef(null);
@@ -297,6 +428,10 @@ function MPRSlicePane({
   useEffect(() => {
     setDraft(null);
   }, [tool, onClearDraftSignal]);
+
+  useEffect(() => {
+    setDraft(null);
+  }, [timeIndex]);
 
   const resolveViewOrigin = useCallback(() => {
     const spec = viewSpec(axis);
@@ -391,12 +526,13 @@ function MPRSlicePane({
         });
       };
 
-      const drawDistance = (points, cursor, live) => {
+      const drawDistance = (points, cursor, live, extra = {}) => {
         const pts = drawPts(points, cursor);
         if (pts.length < 1) return;
-        ctx.strokeStyle = live ? '#ffe082' : '#ffd54f';
-        ctx.fillStyle = '#ffd54f';
-        ctx.lineWidth = 1.6;
+        const selected = extra.selected;
+        ctx.strokeStyle = live ? '#ffe082' : selected ? '#fff176' : '#ffd54f';
+        ctx.fillStyle = selected ? '#fff176' : '#ffd54f';
+        ctx.lineWidth = selected ? 2.2 : 1.6;
         ctx.setLineDash(live ? [5, 4] : []);
         if (pts.length >= 2) {
           ctx.beginPath();
@@ -407,7 +543,7 @@ function MPRSlicePane({
         ctx.setLineDash([]);
         pts.forEach((p) => {
           ctx.beginPath();
-          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, selected ? 6 : 4, 0, Math.PI * 2);
           ctx.fill();
           ctx.strokeStyle = '#111';
           ctx.lineWidth = 1;
@@ -419,17 +555,19 @@ function MPRSlicePane({
             x: (pts[0].x + pts[1].x) / 2,
             y: (pts[0].y + pts[1].y) / 2,
           };
-          drawMeasureLabel(ctx, mid.x, mid.y, formatDistance(distanceMm(mmPts[0], mmPts[1])));
+          const prefix = extra.label ? `${extra.label} · ` : '';
+          drawMeasureLabel(ctx, mid.x, mid.y, `${prefix}${formatDistance(distanceMm(mmPts[0], mmPts[1]))}`);
         }
       };
 
-      const drawArea = (points, cursor, live) => {
+      const drawArea = (points, cursor, live, extra = {}) => {
         const mmPts = cursor ? [...points, cursor] : points;
         const pts = drawPts(points, cursor);
         if (!pts.length) return;
+        const selected = extra.selected;
         ctx.fillStyle = live ? 'rgba(255, 213, 79, 0.16)' : 'rgba(255, 213, 79, 0.22)';
-        ctx.strokeStyle = '#ffd54f';
-        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = selected ? '#fff176' : '#ffd54f';
+        ctx.lineWidth = selected ? 2.2 : 1.6;
         ctx.setLineDash(live ? [5, 4] : []);
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
@@ -439,9 +577,9 @@ function MPRSlicePane({
         ctx.stroke();
         ctx.setLineDash([]);
         pts.forEach((p) => {
-          ctx.fillStyle = '#ffd54f';
+          ctx.fillStyle = selected ? '#fff176' : '#ffd54f';
           ctx.beginPath();
-          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, selected ? 6 : 4, 0, Math.PI * 2);
           ctx.fill();
           ctx.strokeStyle = '#111';
           ctx.lineWidth = 1;
@@ -450,20 +588,24 @@ function MPRSlicePane({
         if (mmPts.length >= 3) {
           const cxp = pts.reduce((s2, p) => s2 + p.x, 0) / pts.length;
           const cyp = pts.reduce((s2, p) => s2 + p.y, 0) / pts.length;
+          const prefix = extra.label ? `${extra.label} · ` : '';
           drawMeasureLabel(
             ctx,
             cxp,
             cyp,
-            formatArea(polygonAreaMm2(mmPts, s.right, s.down))
+            `${prefix}${formatArea(polygonAreaMm2(mmPts, s.right, s.down))}`
           );
         }
       };
 
       measurements
-        .filter((m) => m.axis === axis)
+        .filter((m) =>
+          isSliceMeasurementVisible(m, axis, timeIndex, volume, mprCenter, mprBasis)
+        )
         .forEach((m) => {
-          if (m.type === 'distance') drawDistance(m.points);
-          else drawArea(m.points);
+          const extra = { label: m.label, selected: m.id === selectedMeasurementId };
+          if (m.type === 'distance') drawDistance(m.points, null, false, extra);
+          else drawArea(m.points, null, false, extra);
         });
 
       if (draft && draft.axis === axis) {
@@ -471,7 +613,7 @@ function MPRSlicePane({
         else drawArea(draft.points, draft.cursor, true);
       }
     },
-    [axis, draft, measurements, tool, volume]
+    [axis, draft, measurements, mprBasis, mprCenter, selectedMeasurementId, timeIndex, tool, volume]
   );
 
   const drawOverlayRef = useRef(drawOverlay);
@@ -615,6 +757,55 @@ function MPRSlicePane({
     return { mode: 'move' };
   };
 
+  const visibleMeasurements = () =>
+    measurements.filter((m) =>
+      isSliceMeasurementVisible(m, axis, timeIndex, volume, mprCenter, mprBasis)
+    );
+
+  const mmToCssPos = (slice, mm, dw, dh) => {
+    const im = worldMmToImage(volume, slice, mm);
+    return imageToCss(slice, im.u, im.v, dw, dh);
+  };
+
+  const hitMeasurement = (pos) => {
+    const slice = sliceRef.current;
+    if (!slice || !pos || draftRef.current) return null;
+    const vis = visibleMeasurements();
+    let bestPt = null;
+    let bestPtD = 10;
+    vis.forEach((m) => {
+      m.points.forEach((mm, index) => {
+        const p = mmToCssPos(slice, mm, pos.dw, pos.dh);
+        const d = Math.hypot(pos.x - p.x, pos.y - p.y);
+        if (d < bestPtD) {
+          bestPtD = d;
+          bestPt = { mode: 'editPoint', id: m.id, index };
+        }
+      });
+    });
+    if (bestPt) return bestPt;
+
+    let bestBody = null;
+    let bestBodyD = 8;
+    vis.forEach((m) => {
+      const pts = m.points.map((mm) => mmToCssPos(slice, mm, pos.dw, pos.dh));
+      const segs =
+        m.type === 'area' && pts.length >= 3
+          ? pts.map((p, i) => [p, pts[(i + 1) % pts.length]])
+          : pts.length >= 2
+            ? [[pts[0], pts[1]]]
+            : [];
+      segs.forEach(([a, b]) => {
+        const d = distToSegment(pos.x, pos.y, a.x, a.y, b.x, b.y);
+        if (d < bestBodyD) {
+          bestBodyD = d;
+          bestBody = { mode: 'editMove', id: m.id };
+        }
+      });
+    });
+    return bestBody;
+  };
+
   const finishArea = (points) => {
     if (points.length >= 3) {
       onAddMeasurement({
@@ -632,6 +823,17 @@ function MPRSlicePane({
     if (!pos) return;
     const slice = sliceRef.current;
     e.currentTarget.setPointerCapture(e.pointerId);
+
+    const editHit = hitMeasurement(pos);
+    if (editHit) {
+      onSelectMeasurement?.(editHit.id);
+      dragRef.current = {
+        ...editHit,
+        lastMm: imageToWorldMm(volume, slice, pos.imgU, pos.imgV),
+      };
+      e.currentTarget.style.cursor = 'grabbing';
+      return;
+    }
 
     if (tool !== 'navigate') {
       const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
@@ -679,9 +881,31 @@ function MPRSlicePane({
     const pos = pointerCss(e.clientX, e.clientY, { clamp: !dragRef.current });
     if (!pos) return;
     const slice = sliceRef.current;
+    const drag = dragRef.current;
+
+    if (drag?.mode === 'editPoint' || drag?.mode === 'editMove') {
+      const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
+      if (drag.mode === 'editPoint') {
+        onUpdateMeasurement?.(drag.id, (m) => {
+          const points = m.points.slice();
+          points[drag.index] = mm;
+          return { ...m, points };
+        });
+      } else {
+        const delta = subVec(mm, drag.lastMm);
+        drag.lastMm = mm;
+        onUpdateMeasurement?.(drag.id, (m) => ({
+          ...m,
+          points: m.points.map((p) => addVec(p, delta)),
+        }));
+      }
+      e.currentTarget.style.cursor = 'grabbing';
+      return;
+    }
 
     if (tool !== 'navigate') {
-      e.currentTarget.style.cursor = 'crosshair';
+      const hover = hitMeasurement(pos);
+      e.currentTarget.style.cursor = hover ? 'grab' : 'crosshair';
       if (draftRef.current && draftRef.current.axis === axis) {
         const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
         setDraft((d) => (d ? { ...d, cursor: mm } : d));
@@ -689,8 +913,12 @@ function MPRSlicePane({
       return;
     }
 
-    const drag = dragRef.current;
     if (!drag) {
+      const hover = hitMeasurement(pos);
+      if (hover) {
+        e.currentTarget.style.cursor = 'grab';
+        return;
+      }
       const hit = hitTestMode(pos);
       e.currentTarget.style.cursor =
         hit.mode === 'tilt' ? 'grab' : hit.mode === 'moveLine' ? 'move' : 'crosshair';
@@ -747,7 +975,7 @@ function MPRSlicePane({
 
   const onPointerUp = (e) => {
     dragRef.current = null;
-    if (tool === 'navigate') e.currentTarget.style.cursor = 'crosshair';
+    e.currentTarget.style.cursor = 'crosshair';
   };
 
   const onDoubleClick = (e) => {
@@ -770,10 +998,10 @@ function MPRSlicePane({
   const planeColor = AXIS_META[axis].color;
   const hint =
     tool === 'distance'
-      ? 'Click two points to measure length'
+      ? 'Click two points to measure length · Drag points to edit'
       : tool === 'area'
-        ? 'Click to add points · Double-click or Enter to close · Esc cancel'
-        : 'Drag a line near the ends to rotate (stays 90°) · Drag the middle to move it · Drag center to move the crosshair · Wheel zoom · Shift+wheel scroll';
+        ? 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel'
+        : 'Drag a line near the ends to rotate (stays 90°) · Drag the middle to move it · Drag center to move the crosshair · Drag measurement points to edit · Wheel zoom · Shift+wheel scroll';
 
   return (
     <Pane ref={containerRef} $borderColor={planeColor}>
@@ -829,13 +1057,17 @@ const MPRViewer = () => {
   const [viewEpoch, setViewEpoch] = useState(0);
   const [tool, setTool] = useState('navigate');
   const [measurements, setMeasurements] = useState([]);
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState(null);
   const [clearDraftSignal, setClearDraftSignal] = useState(0);
   const timeRef = useRef(timeIndex);
+  const labelCounters = useRef({ d: 0, a: 0 });
 
   useEffect(() => {
     setMeasurements([]);
+    setSelectedMeasurementId(null);
     setTool('navigate');
     setClearDraftSignal((n) => n + 1);
+    labelCounters.current = { d: 0, a: 0 };
   }, [volume]);
   timeRef.current = timeIndex;
 
@@ -847,6 +1079,38 @@ const MPRViewer = () => {
     }, ms);
     return () => clearInterval(id);
   }, [playing, volume, setTimeIndex]);
+
+  const addMeasurement = (partial) => {
+    const isDist = partial.type === 'distance';
+    const n = isDist ? ++labelCounters.current.d : ++labelCounters.current.a;
+    const snap = snapshotMeasurementPlane(volume, partial.axis, mprCenter, mprBasis);
+    const next = {
+      ...partial,
+      ...snap,
+      label: isDist ? `D${n}` : `A${n}`,
+      timeIndex,
+    };
+    setMeasurements((prev) => [...prev, next]);
+    setSelectedMeasurementId(next.id);
+  };
+
+  const updateMeasurement = (id, updater) => {
+    setMeasurements((prev) => prev.map((m) => (m.id === id ? updater(m) : m)));
+  };
+
+  const deleteMeasurement = (id) => {
+    setMeasurements((prev) => prev.filter((m) => m.id !== id));
+    setSelectedMeasurementId((cur) => (cur === id ? null : cur));
+  };
+
+  const restoreMeasurement = (m) => {
+    setSelectedMeasurementId(m.id);
+    setTimeIndex(m.timeIndex);
+    setPlaying(false);
+    if (m.center) setMprCenter(m.center);
+    if (m.basis) setMprBasis(m.basis);
+    setViewEpoch((n) => n + 1);
+  };
 
   const exportFrame = () => {
     if (!currentImage?.volume) return;
@@ -880,9 +1144,11 @@ const MPRViewer = () => {
 
   return (
     <Container>
-      <Toolbar>
+      <ControlSidebar>
         <ToolGroup>
+          <GroupTitle>Cine</GroupTitle>
           <Button
+            $grow
             onClick={() => setPlaying((p) => !p)}
             disabled={volume.dims.t <= 1}
             title="Cine play/pause"
@@ -890,50 +1156,60 @@ const MPRViewer = () => {
             {playing ? <Pause size={16} /> : <Play size={16} />}
             Cine
           </Button>
-          <Label>
-            T {timeIndex + 1}/{volume.dims.t}
-          </Label>
-          <Slider
-            type="range"
-            min={0}
-            max={Math.max(0, volume.dims.t - 1)}
-            value={timeIndex}
-            onChange={(e) => {
-              setPlaying(false);
-              setTimeIndex(Number(e.target.value));
-            }}
-          />
+          <SliderRow>
+            <Label $wide="4.2rem">
+              T {timeIndex + 1}/{volume.dims.t}
+            </Label>
+            <Slider
+              type="range"
+              min={0}
+              max={Math.max(0, volume.dims.t - 1)}
+              value={timeIndex}
+              onChange={(e) => {
+                setPlaying(false);
+                setTimeIndex(Number(e.target.value));
+              }}
+            />
+          </SliderRow>
         </ToolGroup>
 
         <ToolGroup>
-          <Label style={{ color: AXIS_META.sagittal.color }}>X {crosshair.x}</Label>
-          <Slider
-            type="range"
-            min={0}
-            max={volume.dims.x - 1}
-            value={crosshair.x}
-            onChange={(e) => setCrosshair({ x: Number(e.target.value) })}
-            style={{ accentColor: AXIS_META.sagittal.color }}
-          />
-          <Label style={{ color: AXIS_META.coronal.color }}>Y {crosshair.y}</Label>
-          <Slider
-            type="range"
-            min={0}
-            max={volume.dims.y - 1}
-            value={crosshair.y}
-            onChange={(e) => setCrosshair({ y: Number(e.target.value) })}
-            style={{ accentColor: AXIS_META.coronal.color }}
-          />
-          <Label style={{ color: AXIS_META.axial.color }}>Z {crosshair.z}</Label>
-          <Slider
-            type="range"
-            min={0}
-            max={volume.dims.z - 1}
-            value={crosshair.z}
-            onChange={(e) => setCrosshair({ z: Number(e.target.value) })}
-            style={{ accentColor: AXIS_META.axial.color }}
-          />
+          <GroupTitle>Planes</GroupTitle>
+          <SliderRow>
+            <Label style={{ color: AXIS_META.sagittal.color }}>X {crosshair.x}</Label>
+            <Slider
+              type="range"
+              min={0}
+              max={volume.dims.x - 1}
+              value={crosshair.x}
+              onChange={(e) => setCrosshair({ x: Number(e.target.value) })}
+              style={{ accentColor: AXIS_META.sagittal.color }}
+            />
+          </SliderRow>
+          <SliderRow>
+            <Label style={{ color: AXIS_META.coronal.color }}>Y {crosshair.y}</Label>
+            <Slider
+              type="range"
+              min={0}
+              max={volume.dims.y - 1}
+              value={crosshair.y}
+              onChange={(e) => setCrosshair({ y: Number(e.target.value) })}
+              style={{ accentColor: AXIS_META.coronal.color }}
+            />
+          </SliderRow>
+          <SliderRow>
+            <Label style={{ color: AXIS_META.axial.color }}>Z {crosshair.z}</Label>
+            <Slider
+              type="range"
+              min={0}
+              max={volume.dims.z - 1}
+              value={crosshair.z}
+              onChange={(e) => setCrosshair({ z: Number(e.target.value) })}
+              style={{ accentColor: AXIS_META.axial.color }}
+            />
+          </SliderRow>
           <Button
+            $grow
             onClick={() => {
               resetMprOrientation();
               setViewEpoch((n) => n + 1);
@@ -942,77 +1218,144 @@ const MPRViewer = () => {
           >
             Reset tilt
           </Button>
-          <Button
-            $active={tool === 'navigate'}
-            onClick={() => setTool('navigate')}
-            title="Move and rotate MPR lines"
-          >
-            Nav
-          </Button>
-          <Button
-            $active={tool === 'distance'}
-            onClick={() => setTool('distance')}
-            title="Measure distance on a 2D slice"
-          >
-            Length
-          </Button>
-          <Button
-            $active={tool === 'area'}
-            onClick={() => setTool('area')}
-            title="Measure area on a 2D slice"
-          >
-            Area
-          </Button>
-          <Button
-            onClick={() => {
-              setMeasurements([]);
-              setClearDraftSignal((n) => n + 1);
-            }}
-            disabled={measurements.length === 0}
-            title="Clear all measurements"
-          >
-            Clear
-          </Button>
-          <Label>Zoom {Math.round(zoom * 100)}%</Label>
-          <Slider
-            type="range"
-            min={0.4}
-            max={4}
-            step={0.05}
-            value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
-            title="MPR zoom"
-          />
-          <Button onClick={() => setZoom(1.35)} title="Fit default zoom">
+        </ToolGroup>
+
+        <ToolGroup>
+          <GroupTitle>Tools</GroupTitle>
+          <ButtonRow>
+            <Button
+              $grow
+              $active={tool === 'navigate'}
+              onClick={() => setTool('navigate')}
+              title="Move and rotate MPR lines"
+            >
+              Nav
+            </Button>
+            <Button
+              $grow
+              $active={tool === 'distance'}
+              onClick={() => setTool('distance')}
+              title="Measure distance on a 2D slice"
+            >
+              Length
+            </Button>
+            <Button
+              $grow
+              $active={tool === 'area'}
+              onClick={() => setTool('area')}
+              title="Measure area on a 2D slice"
+            >
+              Area
+            </Button>
+            <Button
+              $grow
+              onClick={() => {
+                setMeasurements([]);
+                setSelectedMeasurementId(null);
+                setClearDraftSignal((n) => n + 1);
+                labelCounters.current = { d: 0, a: 0 };
+              }}
+              disabled={measurements.length === 0}
+              title="Clear all measurements"
+            >
+              Clear
+            </Button>
+          </ButtonRow>
+          <SliderRow>
+            <Label $wide="4.5rem">Zoom {Math.round(zoom * 100)}%</Label>
+            <Slider
+              type="range"
+              min={0.4}
+              max={4}
+              step={0.05}
+              value={zoom}
+              onChange={(e) => setZoom(Number(e.target.value))}
+              title="MPR zoom"
+            />
+          </SliderRow>
+          <Button $grow onClick={() => setZoom(1.35)} title="Fit default zoom">
             Fit
           </Button>
         </ToolGroup>
 
         <ToolGroup>
-          <Label>WC {windowCenter}</Label>
-          <Slider
-            type="range"
-            min={0}
-            max={255}
-            value={windowCenter}
-            onChange={(e) =>
-              setWindowLevel({ windowCenter: Number(e.target.value) })
-            }
-          />
-          <Label>WW {windowWidth}</Label>
-          <Slider
-            type="range"
-            min={1}
-            max={255}
-            value={windowWidth}
-            onChange={(e) =>
-              setWindowLevel({ windowWidth: Number(e.target.value) })
-            }
-          />
+          <GroupTitle>Measurements</GroupTitle>
+          {measurements.length === 0 ? (
+            <MeasureMetaLine>None yet · Length or Area on a 2D view</MeasureMetaLine>
+          ) : (
+            <MeasureList>
+              {measurements.map((m) => {
+                const visible2d = isSliceMeasurementVisible(
+                  m,
+                  m.axis,
+                  timeIndex,
+                  volume,
+                  mprCenter,
+                  mprBasis
+                );
+                const visible3d = m.timeIndex === timeIndex;
+                return (
+                  <MeasureRow
+                    key={m.id}
+                    $active={m.id === selectedMeasurementId}
+                    $visible={visible2d || visible3d}
+                    onClick={() => restoreMeasurement(m)}
+                    title="Jump to this measurement"
+                  >
+                    <strong>{m.label}</strong>
+                    <MeasureValue>
+                      {measurementCaption(m)}
+                      <MeasureMetaLine>
+                        T{m.timeIndex + 1} · {AXIS_META[m.axis]?.short || m.axis}
+                      </MeasureMetaLine>
+                    </MeasureValue>
+                    <MeasureDelete
+                      role="button"
+                      title={`Delete ${m.label}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteMeasurement(m.id);
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </MeasureDelete>
+                  </MeasureRow>
+                );
+              })}
+            </MeasureList>
+          )}
         </ToolGroup>
 
         <ToolGroup>
-          <Label>3D style</Label>
+          <GroupTitle>Window</GroupTitle>
+          <SliderRow>
+            <Label $wide="3.6rem">WC {windowCenter}</Label>
+            <Slider
+              type="range"
+              min={0}
+              max={255}
+              value={windowCenter}
+              onChange={(e) =>
+                setWindowLevel({ windowCenter: Number(e.target.value) })
+              }
+            />
+          </SliderRow>
+          <SliderRow>
+            <Label $wide="3.6rem">WW {windowWidth}</Label>
+            <Slider
+              type="range"
+              min={1}
+              max={255}
+              value={windowWidth}
+              onChange={(e) =>
+                setWindowLevel({ windowWidth: Number(e.target.value) })
+              }
+            />
+          </SliderRow>
+        </ToolGroup>
+
+        <ToolGroup>
+          <GroupTitle>Volume</GroupTitle>
           <Select
             value={colorStyle}
             onChange={(e) => {
@@ -1029,75 +1372,92 @@ const MPRViewer = () => {
             <option value="glass">Glass</option>
             <option value="gray">Gray</option>
           </Select>
-          <Button
-            $active={renderMode === 'dvr'}
-            onClick={() => setRenderMode('dvr')}
-            title="Shaded volume rendering"
-          >
-            DVR
-          </Button>
-          <Button
-            $active={renderMode === 'mip'}
-            onClick={() => setRenderMode('mip')}
-            title="Maximum intensity projection"
-          >
-            MIP
-          </Button>
-          <Label>Opacity</Label>
-          <Slider
-            type="range"
-            min={0.15}
-            max={1}
-            step={0.05}
-            value={opacity}
-            onChange={(e) => setOpacity(Number(e.target.value))}
-          />
+          <ButtonRow>
+            <Button
+              $grow
+              $active={renderMode === 'dvr'}
+              onClick={() => setRenderMode('dvr')}
+              title="Shaded volume rendering"
+            >
+              DVR
+            </Button>
+            <Button
+              $grow
+              $active={renderMode === 'mip'}
+              onClick={() => setRenderMode('mip')}
+              title="Maximum intensity projection"
+            >
+              MIP
+            </Button>
+          </ButtonRow>
+          <SliderRow>
+            <Label $wide="4.2rem">Opacity</Label>
+            <Slider
+              type="range"
+              min={0.15}
+              max={1}
+              step={0.05}
+              value={opacity}
+              onChange={(e) => setOpacity(Number(e.target.value))}
+            />
+          </SliderRow>
+          <ButtonRow>
+            <Button
+              $grow
+              $active={useCutPlanes}
+              onClick={() => setUseCutPlanes((v) => !v)}
+              title="Cut volume at crosshair"
+            >
+              {useCutPlanes ? 'Cuts on' : 'Cuts off'}
+            </Button>
+            <Button
+              $grow
+              $active={showMprLines}
+              onClick={() => setShowMprLines((v) => !v)}
+              title="Show MPR planes on the 3D volume"
+            >
+              {showMprLines ? 'MPR lines on' : 'MPR lines off'}
+            </Button>
+          </ButtonRow>
         </ToolGroup>
 
         <ToolGroup>
-          <Label>Light az</Label>
-          <Slider
-            type="range"
-            min={0}
-            max={360}
-            value={lightAzimuth}
-            onChange={(e) => setLightAzimuth(Number(e.target.value))}
-            title="Light azimuth"
-          />
-          <Label>el</Label>
-          <Slider
-            type="range"
-            min={-80}
-            max={80}
-            value={lightElevation}
-            onChange={(e) => setLightElevation(Number(e.target.value))}
-            title="Light elevation"
-          />
-          <Label>int</Label>
-          <Slider
-            type="range"
-            min={0.2}
-            max={2}
-            step={0.05}
-            value={lightIntensity}
-            onChange={(e) => setLightIntensity(Number(e.target.value))}
-            title="Light intensity"
-          />
-          <Button
-            $active={useCutPlanes}
-            onClick={() => setUseCutPlanes((v) => !v)}
-            title="Cut volume at crosshair"
-          >
-            {useCutPlanes ? 'Cuts on' : 'Cuts off'}
-          </Button>
-          <Button
-            $active={showMprLines}
-            onClick={() => setShowMprLines((v) => !v)}
-            title="Show MPR planes on the 3D volume"
-          >
-            {showMprLines ? 'MPR lines on' : 'MPR lines off'}
-          </Button>
-          <Button onClick={exportFrame}>
+          <GroupTitle>Light</GroupTitle>
+          <SliderRow>
+            <Label>az</Label>
+            <Slider
+              type="range"
+              min={0}
+              max={360}
+              value={lightAzimuth}
+              onChange={(e) => setLightAzimuth(Number(e.target.value))}
+              title="Light azimuth"
+            />
+          </SliderRow>
+          <SliderRow>
+            <Label>el</Label>
+            <Slider
+              type="range"
+              min={-80}
+              max={80}
+              value={lightElevation}
+              onChange={(e) => setLightElevation(Number(e.target.value))}
+              title="Light elevation"
+            />
+          </SliderRow>
+          <SliderRow>
+            <Label>int</Label>
+            <Slider
+              type="range"
+              min={0.2}
+              max={2}
+              step={0.05}
+              value={lightIntensity}
+              onChange={(e) => setLightIntensity(Number(e.target.value))}
+              title="Light intensity"
+            />
+          </SliderRow>
+          <Button $grow onClick={exportFrame}>
             <Download size={16} />
             NRRD
           </Button>
@@ -1105,11 +1465,13 @@ const MPRViewer = () => {
 
         <Meta>
           {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
-          × {volume.dims.t} · {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×
-          {sizeMm.z.toFixed(0)} mm
+          × {volume.dims.t}
+          <br />
+          {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×{sizeMm.z.toFixed(0)} mm
         </Meta>
-      </Toolbar>
+      </ControlSidebar>
 
+      <Viewport>
       <Grid>
         <MPRSlicePane
           axis="axial"
@@ -1126,7 +1488,10 @@ const MPRViewer = () => {
           viewEpoch={viewEpoch}
           tool={tool}
           measurements={measurements}
-          onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
+          selectedMeasurementId={selectedMeasurementId}
+          onSelectMeasurement={setSelectedMeasurementId}
+          onAddMeasurement={addMeasurement}
+          onUpdateMeasurement={updateMeasurement}
           onClearDraftSignal={clearDraftSignal}
         />
         <MPRSlicePane
@@ -1144,7 +1509,10 @@ const MPRViewer = () => {
           viewEpoch={viewEpoch}
           tool={tool}
           measurements={measurements}
-          onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
+          selectedMeasurementId={selectedMeasurementId}
+          onSelectMeasurement={setSelectedMeasurementId}
+          onAddMeasurement={addMeasurement}
+          onUpdateMeasurement={updateMeasurement}
           onClearDraftSignal={clearDraftSignal}
         />
         <MPRSlicePane
@@ -1162,7 +1530,10 @@ const MPRViewer = () => {
           viewEpoch={viewEpoch}
           tool={tool}
           measurements={measurements}
-          onAddMeasurement={(m) => setMeasurements((prev) => [...prev, m])}
+          selectedMeasurementId={selectedMeasurementId}
+          onSelectMeasurement={setSelectedMeasurementId}
+          onAddMeasurement={addMeasurement}
+          onUpdateMeasurement={updateMeasurement}
           onClearDraftSignal={clearDraftSignal}
         />
         <Pane>
@@ -1200,10 +1571,13 @@ const MPRViewer = () => {
               lightAzimuth={lightAzimuth}
               lightElevation={lightElevation}
               lightIntensity={lightIntensity}
+              measurements={measurements}
+              selectedMeasurementId={selectedMeasurementId}
             />
           </Canvas>
         </Pane>
       </Grid>
+      </Viewport>
     </Container>
   );
 };
