@@ -563,7 +563,7 @@ function MeasurementOverlay({
       {visible.map((m) => {
         const pts = m.points.map(toBox);
         const selected = m.id === selectedId;
-        const color = selected ? '#fff176' : '#ffd54f';
+        const color = m.color || '#ffd54f';
         const closed = m.type === 'area' && pts.length >= 3;
         const linePts = closed ? [...pts, pts[0]] : pts;
         const mid = pts
@@ -587,7 +587,7 @@ function MeasurementOverlay({
                 key={i}
                 position={p}
                 color={color}
-                radius={selected ? 0.038 : 0.034}
+                radius={selected ? 0.0095 : 0.0085}
                 invScale={invScale}
               />
             ))}
@@ -598,10 +598,11 @@ function MeasurementOverlay({
               style={{
                 pointerEvents: 'none',
                 font: '600 11px "IBM Plex Sans", "Segoe UI", sans-serif',
-                color: '#ffe082',
+                color,
                 background: 'rgba(8, 12, 16, 0.78)',
                 padding: '2px 5px',
                 borderRadius: 3,
+                border: `1px solid ${color}`,
                 whiteSpace: 'nowrap',
               }}
             >
@@ -644,7 +645,7 @@ function MeasurementOverlay({
               key={`draft-${i}`}
               position={toBox(p)}
               color="#ffb74d"
-              radius={0.034}
+              radius={0.0085}
               invScale={invScale}
             />
           ))}
@@ -652,7 +653,7 @@ function MeasurementOverlay({
             <MeasureBall
               position={toBox(cursor)}
               color="#00e5ff"
-              radius={0.046}
+              radius={0.0115}
               invScale={invScale}
               live
             />

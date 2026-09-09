@@ -192,13 +192,19 @@ const MeasureRow = styled.div`
   gap: 0.35rem;
   width: 100%;
   text-align: left;
-  background: ${(p) => (p.$active ? '#2a4a44' : '#243040')};
-  border: 1px solid ${(p) => (p.$active ? '#4db8a6' : p.$visible ? '#3a4a5c' : '#2a3542')};
+  background: ${(p) => (p.$active ? hexToRgba(p.$color, 0.22) : '#243040')};
+  border: 1px solid ${(p) => (p.$active ? p.$color : p.$visible ? '#3a4a5c' : '#2a3542')};
+  box-shadow: inset 3px 0 0 ${(p) => p.$color || '#ffd54f'};
   color: ${(p) => (p.$visible ? '#e8e6e3' : '#7a8a99')};
   border-radius: 6px;
-  padding: 0.28rem 0.35rem 0.28rem 0.45rem;
+  padding: 0.28rem 0.35rem 0.28rem 0.55rem;
   cursor: pointer;
   font-size: 0.75rem;
+`;
+
+const MeasureLabel = styled.strong`
+  color: ${(p) => p.$color || '#ffd54f'};
+  font-weight: 700;
 `;
 
 const MeasureValue = styled.span`
@@ -303,7 +309,40 @@ const AXIS_META = {
   axial: { label: 'Axial (Z)', short: 'Ax', color: '#1e88e5', key: 'z' },
 };
 
+const MEASURE_COLORS = [
+  '#ffd54f',
+  '#4fc3f7',
+  '#81c784',
+  '#ff8a65',
+  '#ce93d8',
+  '#f48fb1',
+  '#26c6da',
+  '#aed581',
+  '#90caf9',
+  '#ef9a9a',
+  '#fff176',
+  '#b39ddb',
+];
+
 const CINE_RATES = [0.25, 0.5, 0.75, 1];
+
+function hexToRgba(hex, alpha) {
+  const n = (hex || '#ffd54f').replace('#', '');
+  const r = parseInt(n.slice(0, 2), 16);
+  const g = parseInt(n.slice(2, 4), 16);
+  const b = parseInt(n.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function pickMeasureColor(existing) {
+  const used = new Set((existing || []).map((m) => m.color).filter(Boolean));
+  const free = MEASURE_COLORS.find((c) => !used.has(c));
+  return free || MEASURE_COLORS[(existing || []).length % MEASURE_COLORS.length];
+}
+
+function measureColor(m) {
+  return m?.color || MEASURE_COLORS[0];
+}
 
 function getViewLayout(container, canvas) {
   const rect = container.getBoundingClientRect();
@@ -375,7 +414,7 @@ function formatArea(mm2) {
   return `${(mm2 / 100).toFixed(2)} cm²`;
 }
 
-function drawMeasureLabel(ctx, x, y, text) {
+function drawMeasureLabel(ctx, x, y, text, color = '#ffe082') {
   ctx.font = '600 11px "IBM Plex Sans", "Segoe UI", sans-serif';
   const padX = 5;
   const w = ctx.measureText(text).width + padX * 2;
@@ -383,14 +422,14 @@ function drawMeasureLabel(ctx, x, y, text) {
   const lx = Math.max(4, x - w / 2);
   const ly = y - 20;
   ctx.fillStyle = 'rgba(8, 12, 16, 0.78)';
-  ctx.strokeStyle = 'rgba(255, 214, 90, 0.85)';
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1;
   ctx.beginPath();
   if (typeof ctx.roundRect === 'function') ctx.roundRect(lx, ly, w, h, 3);
   else ctx.rect(lx, ly, w, h);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = '#ffe082';
+  ctx.fillStyle = color;
   ctx.textBaseline = 'middle';
   ctx.fillText(text, lx + padX, ly + h / 2);
 }
@@ -566,9 +605,10 @@ function MPRSlicePane({
         const pts = drawPts(points, cursor);
         if (pts.length < 1) return;
         const selected = extra.selected;
-        ctx.strokeStyle = live ? '#ffe082' : selected ? '#fff176' : '#ffd54f';
-        ctx.fillStyle = selected ? '#fff176' : '#ffd54f';
-        ctx.lineWidth = selected ? 2.2 : 1.6;
+        const color = extra.color || '#ffd54f';
+        ctx.strokeStyle = live ? '#7ee8ff' : color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = selected ? 2.4 : 1.6;
         ctx.setLineDash(live ? [5, 4] : []);
         if (pts.length >= 2) {
           ctx.beginPath();
@@ -578,10 +618,11 @@ function MPRSlicePane({
         }
         ctx.setLineDash([]);
         pts.forEach((p) => {
+          ctx.fillStyle = color;
           ctx.beginPath();
           ctx.arc(p.x, p.y, selected ? 6 : 4, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = '#111';
+          ctx.strokeStyle = selected ? '#fff' : '#111';
           ctx.lineWidth = 1;
           ctx.stroke();
         });
@@ -592,7 +633,13 @@ function MPRSlicePane({
             y: (pts[0].y + pts[1].y) / 2,
           };
           const prefix = extra.label ? `${extra.label} · ` : '';
-          drawMeasureLabel(ctx, mid.x, mid.y, `${prefix}${formatDistance(distanceMm(mmPts[0], mmPts[1]))}`);
+          drawMeasureLabel(
+            ctx,
+            mid.x,
+            mid.y,
+            `${prefix}${formatDistance(distanceMm(mmPts[0], mmPts[1]))}`,
+            color
+          );
         }
       };
 
@@ -601,9 +648,10 @@ function MPRSlicePane({
         const pts = drawPts(points, cursor);
         if (!pts.length) return;
         const selected = extra.selected;
-        ctx.fillStyle = live ? 'rgba(255, 213, 79, 0.16)' : 'rgba(255, 213, 79, 0.22)';
-        ctx.strokeStyle = selected ? '#fff176' : '#ffd54f';
-        ctx.lineWidth = selected ? 2.2 : 1.6;
+        const color = extra.color || '#ffd54f';
+        ctx.fillStyle = hexToRgba(color, live ? 0.14 : 0.22);
+        ctx.strokeStyle = live ? '#7ee8ff' : color;
+        ctx.lineWidth = selected ? 2.4 : 1.6;
         ctx.setLineDash(live ? [5, 4] : []);
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
@@ -613,11 +661,11 @@ function MPRSlicePane({
         ctx.stroke();
         ctx.setLineDash([]);
         pts.forEach((p) => {
-          ctx.fillStyle = selected ? '#fff176' : '#ffd54f';
+          ctx.fillStyle = color;
           ctx.beginPath();
           ctx.arc(p.x, p.y, selected ? 6 : 4, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = '#111';
+          ctx.strokeStyle = selected ? '#fff' : '#111';
           ctx.lineWidth = 1;
           ctx.stroke();
         });
@@ -629,7 +677,8 @@ function MPRSlicePane({
             ctx,
             cxp,
             cyp,
-            `${prefix}${formatArea(polygonAreaMm2(mmPts, s.right, s.down))}`
+            `${prefix}${formatArea(polygonAreaMm2(mmPts, s.right, s.down))}`,
+            color
           );
         }
       };
@@ -639,7 +688,11 @@ function MPRSlicePane({
           isSliceMeasurementVisible(m, axis, timeIndex, volume, mprCenter, mprBasis)
         )
         .forEach((m) => {
-          const extra = { label: m.label, selected: m.id === selectedMeasurementId };
+          const extra = {
+            label: m.label,
+            selected: m.id === selectedMeasurementId,
+            color: measureColor(m),
+          };
           if (m.type === 'distance') drawDistance(m.points, null, false, extra);
           else drawArea(m.points, null, false, extra);
         });
@@ -1226,10 +1279,7 @@ function EcgStrip({ ecg, timeIndex, frameCount, onSeek }) {
     ecg?.heartRateBpm && Number.isFinite(ecg.heartRateBpm)
       ? Math.round(ecg.heartRateBpm)
       : null;
-  const title =
-    ecg?.source === 'dicom-waveform'
-      ? `${ecg.label || 'ECG'}${bpm ? ` · ${bpm} bpm` : ''}`
-      : `Cardiac cycle (no ECG in file)${bpm ? ` · ${bpm} bpm` : ''}`;
+  const title = `${ecg?.label || 'ECG'}${bpm ? ` · ${bpm} bpm` : ''}`;
 
   const samp = ecg?.samples;
   let sMin = 0;
@@ -1376,8 +1426,9 @@ const MPRViewer = () => {
       ...snap,
       label: isDist ? `D${n}` : `A${n}`,
       timeIndex,
+      color: pickMeasureColor(measurements),
     };
-    setMeasurements((prev) => [...prev, next]);
+    setMeasurements((prev) => [...prev, { ...next, color: pickMeasureColor(prev) }]);
     setSelectedMeasurementId(next.id);
   };
 
@@ -1461,9 +1512,7 @@ const MPRViewer = () => {
           </SliderRow>
           {ecg ? (
             <MeasureMetaLine>
-              {ecg.source === 'dicom-waveform'
-                ? ecg.label || 'ECG'
-                : 'Cycle from 4D motion'}
+              {ecg.label || 'ECG'}
               {ecg.heartRateBpm ? ` · ${Math.round(ecg.heartRateBpm)} bpm` : ''}
             </MeasureMetaLine>
           ) : null}
@@ -1598,10 +1647,11 @@ const MPRViewer = () => {
                     key={m.id}
                     $active={m.id === selectedMeasurementId}
                     $visible={visible2d || visible3d}
+                    $color={measureColor(m)}
                     onClick={() => restoreMeasurement(m)}
                     title="Jump to this measurement"
                   >
-                    <strong>{m.label}</strong>
+                    <MeasureLabel $color={measureColor(m)}>{m.label}</MeasureLabel>
                     <MeasureValue>
                       {measurementCaption(m)}
                       <MeasureMetaLine>

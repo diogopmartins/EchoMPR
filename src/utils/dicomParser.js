@@ -68,9 +68,9 @@ export const parseDicomFile = async (file, options = {}) => {
   if (volume) {
     dicomData.pixelArray = volume.voxels;
     try {
-      volume.ecg = extractEcg(dataSet, arrayBuffer, volume);
+      volume.ecg = extractEcg(dataSet, arrayBuffer);
     } catch (err) {
-      console.warn('ECG / cycle extract failed:', err.message);
+      console.warn('ECG extract failed:', err.message);
     }
   } else if (dataSet.elements.x7fe00010) {
     const pe = dataSet.elements.x7fe00010;
