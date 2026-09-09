@@ -69,11 +69,22 @@ export function rotateBasisInPlane(basis, normalKey, angleRad) {
   const a = normalize(rotateAroundAxis(basis[keys[0]], normal, angleRad));
   let b = normalize(cross(normal, a));
   if (dot(b, basis[keys[1]]) < 0) b = scale(b, -1);
+  // Re-orthogonalize so the visible crosshair stays a true 90° pair
+  const aFix = normalize(cross(b, normal));
+  const aOut = dot(aFix, a) < 0 ? scale(aFix, -1) : aFix;
   return {
-    x: normalKey === 'x' ? normal : keys[0] === 'x' ? a : b,
-    y: normalKey === 'y' ? normal : keys[0] === 'y' ? a : b,
-    z: normalKey === 'z' ? normal : keys[0] === 'z' ? a : b,
+    x: normalKey === 'x' ? normal : keys[0] === 'x' ? aOut : b,
+    y: normalKey === 'y' ? normal : keys[0] === 'y' ? aOut : b,
+    z: normalKey === 'z' ? normal : keys[0] === 'z' ? aOut : b,
   };
+}
+
+/** Drop `point` onto the plane through `planePoint` with `normal`. */
+export function projectPointOntoPlane(volume, point, planePoint, normal) {
+  const n = normalize(normal);
+  const p = voxelToMm(volume, point);
+  const o = voxelToMm(volume, planePoint);
+  return clampCenter(volume, mmToVoxel(volume, sub(p, scale(n, dot(sub(p, o), n)))));
 }
 
 export function spacingMm(volume) {
@@ -217,11 +228,15 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
   const width = Math.max(64, Math.min(1280, Math.round(options.width || 512)));
   const height = Math.max(64, Math.min(1280, Math.round(options.height || 512)));
 
-  // FOV matches this plane's physical size (+ small pad), anisotropic pixels
+  // Isotropic mm/pixel so orthogonal planes stay 90° on screen
   const fov = viewFovMm(volume, axis);
   const pad = 1.06;
-  const stepX = (fov.w * pad) / (width * zoom);
-  const stepY = (fov.h * pad) / (height * zoom);
+  const step = Math.max(
+    (fov.w * pad) / (width * zoom),
+    (fov.h * pad) / (height * zoom)
+  );
+  const stepX = step;
+  const stepY = step;
 
   const ti = Math.max(0, Math.min(volume.dims.t - 1, t | 0));
   const vol = volume.voxels.subarray(
@@ -229,7 +244,8 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     ti * volume.volumeSize + volume.volumeSize
   );
 
-  const centerMm = voxelToMm(volume, center);
+  const viewOrigin = options.viewOrigin || center;
+  const originMm = voxelToMm(volume, viewOrigin);
   const data = new Uint8Array(width * height);
   const cx = (width - 1) / 2;
   const cy = (height - 1) / 2;
@@ -237,7 +253,7 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
   for (let j = 0; j < height; j++) {
     for (let i = 0; i < width; i++) {
       const mm = add(
-        add(centerMm, scale(right, (i - cx) * stepX)),
+        add(originMm, scale(right, (i - cx) * stepX)),
         scale(down, (j - cy) * stepY)
       );
       const vox = mmToVoxel(volume, mm);
@@ -255,12 +271,20 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     let dir = cross(planeNormal, normal);
     if (vecLen(dir) < 1e-6) return { u: 1, v: 0 };
     dir = normalize(dir);
-    // Account for anisotropic display scaling
-    return { u: dot(dir, right) / stepX, v: dot(dir, down) / stepY };
+    return { u: dot(dir, right), v: dot(dir, down) };
   };
 
   const dirA = toImageDir(basis[spec.lineA.key]);
-  const dirB = toImageDir(basis[spec.lineB.key]);
+  const dirBRaw = toImageDir(basis[spec.lineB.key]);
+  const perp = { u: -dirA.v, v: dirA.u };
+  if (perp.u * dirBRaw.u + perp.v * dirBRaw.v < 0) {
+    perp.u = -perp.u;
+    perp.v = -perp.v;
+  }
+
+  const delta = sub(voxelToMm(volume, center), originMm);
+  const crossU = cx + dot(delta, right) / stepX;
+  const crossV = cy + dot(delta, down) / stepY;
 
   return {
     data,
@@ -268,11 +292,16 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     height,
     axis,
     center,
-    pixelMm: (stepX + stepY) * 0.5,
+    viewOrigin,
+    pixelMm: step,
+    stepX,
+    stepY,
     zoom,
+    crossU,
+    crossV,
     dirs: {
       a: { ...dirA, color: spec.lineA.color, planeKey: spec.lineA.key },
-      b: { ...dirB, color: spec.lineB.color, planeKey: spec.lineB.key },
+      b: { ...perp, color: spec.lineB.color, planeKey: spec.lineB.key },
     },
     normalKey: spec.normalKey,
   };
@@ -294,14 +323,17 @@ export function translateCenterInPlane(
   basis,
   axis,
   dImgU,
-  dImgV
+  dImgV,
+  stepX,
+  stepY
 ) {
   const spec = viewSpec(axis);
   const { right, down } = planeAxes(basis[spec.normalKey], spec.worldUp);
   const sp = spacingMm(volume);
-  const pixelMm = Math.min(sp.x, sp.y, sp.z);
+  const sx = stepX || Math.min(sp.x, sp.y, sp.z);
+  const sy = stepY || sx;
   const mm = voxelToMm(volume, center);
-  const next = add(add(mm, scale(right, dImgU * pixelMm)), scale(down, dImgV * pixelMm));
+  const next = add(add(mm, scale(right, dImgU * sx)), scale(down, dImgV * sy));
   return clampCenter(volume, mmToVoxel(volume, next));
 }
 
@@ -319,25 +351,27 @@ export function movePlaneByLineDrag(
   dirU,
   dirV,
   dImgU,
-  dImgV
+  dImgV,
+  stepX,
+  stepY
 ) {
   const spec = viewSpec(axis);
   const { right, down } = planeAxes(basis[spec.normalKey], spec.worldUp);
   const sp = spacingMm(volume);
-  const pixelMm = Math.min(sp.x, sp.y, sp.z);
+  const sx = stepX || Math.min(sp.x, sp.y, sp.z);
+  const sy = stepY || sx;
 
   const len = Math.hypot(dirU, dirV) || 1;
   const lu = dirU / len;
   const lv = dirV / len;
-  // Perpendicular in image space
   const pu = -lv;
   const pv = lu;
   const dragAlongPerp = dImgU * pu + dImgV * pv;
 
-  // Map image perpendicular back to 3D to get signed step along plane normal
-  const perp3 = add(scale(right, pu), scale(down, pv));
+  const perp3 = add(scale(right, pu * sx), scale(down, pv * sy));
   const planeN = basis[planeKey];
   const sign = Math.sign(dot(perp3, planeN)) || 1;
+  const pixelMm = Math.hypot(pu * sx, pv * sy) || sx;
 
   const mm = voxelToMm(volume, center);
   const next = add(mm, scale(planeN, sign * dragAlongPerp * pixelMm));
