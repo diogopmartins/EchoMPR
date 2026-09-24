@@ -2,43 +2,15 @@
  * Philips QLAB Cartesian 4D echo volume helpers.
  * Layout: voxels[t][z][y][x] packed as (T, Z, Y, X)
  */
+import type { DataSet } from 'dicom-parser';
+import { TAG, readElementNumber, readElementString } from './dicomTags';
+import type { Volume, VoxelCoord } from './types';
 
-export function readElementNumber(dataSet, tag) {
-  const element = dataSet.elements[tag];
-  if (!element || element.length === 0) return null;
-
-  const vr = element.vr;
-  switch (vr) {
-    case 'UL':
-      return dataSet.uint32(tag);
-    case 'US':
-      return dataSet.uint16(tag);
-    case 'SS':
-      return dataSet.int16(tag);
-    case 'SL':
-      return dataSet.int32(tag);
-    case 'FD':
-      return dataSet.double(tag);
-    case 'FL':
-      return dataSet.float(tag);
-    case 'DS':
-    case 'IS': {
-      const str = dataSet.string(tag);
-      if (!str) return null;
-      return parseFloat(str.split('\\')[0]);
-    }
-    default: {
-      // Fallbacks when VR is missing/unknown
-      if (element.length === 4) return dataSet.uint32(tag);
-      if (element.length === 8) return dataSet.double(tag);
-      if (element.length === 2) return dataSet.uint16(tag);
-      const str = dataSet.string(tag);
-      return str ? parseFloat(str) : null;
-    }
-  }
-}
-
-export function applyWindowLevel(value, windowCenter, windowWidth) {
+export function applyWindowLevel(
+  value: number,
+  windowCenter?: number | null,
+  windowWidth?: number | null
+): number {
   const wc = windowCenter ?? 128;
   const ww = Math.max(1, windowWidth ?? 256);
   const min = wc - ww / 2;
@@ -51,21 +23,21 @@ export function applyWindowLevel(value, windowCenter, windowWidth) {
 /**
  * Build a 4D Cartesian volume from a parsed dicom-parser DataSet + ArrayBuffer.
  */
-export function buildPhilipsVolume(dataSet, arrayBuffer) {
-  const rows = readElementNumber(dataSet, 'x00280010'); // Y
-  const columns = readElementNumber(dataSet, 'x00280011'); // X
-  const numberOfFrames = readElementNumber(dataSet, 'x00280008') || 1;
-  const frameTimeMs = readElementNumber(dataSet, 'x00181063') || 50;
-  const bitsAllocated = readElementNumber(dataSet, 'x00280100') || 8;
-  const samplesPerPixel = readElementNumber(dataSet, 'x00280002') || 1;
+export function buildPhilipsVolume(dataSet: DataSet, arrayBuffer: ArrayBuffer): Volume {
+  const rows = readElementNumber(dataSet, TAG.rows); // Y
+  const columns = readElementNumber(dataSet, TAG.columns); // X
+  const numberOfFrames = readElementNumber(dataSet, TAG.numberOfFrames) || 1;
+  const frameTimeMs = readElementNumber(dataSet, TAG.frameTime) || 50;
+  const bitsAllocated = readElementNumber(dataSet, TAG.bitsAllocated) || 8;
+  const samplesPerPixel = readElementNumber(dataSet, TAG.samplesPerPixel) || 1;
 
-  const zCount = readElementNumber(dataSet, 'x30011001');
-  const dimFlag = readElementNumber(dataSet, 'x30011002');
-  const spacingZ = readElementNumber(dataSet, 'x30011003');
-  const spacingX = readElementNumber(dataSet, 'x0018602c'); // PhysicalDeltaX (cm)
-  const spacingY = readElementNumber(dataSet, 'x0018602e'); // PhysicalDeltaY (cm)
+  const zCount = readElementNumber(dataSet, TAG.philipsZCount);
+  const dimFlag = readElementNumber(dataSet, TAG.philipsDimFlag);
+  const spacingZ = readElementNumber(dataSet, TAG.philipsSpacingZ);
+  const spacingX = readElementNumber(dataSet, TAG.physicalDeltaX); // cm
+  const spacingY = readElementNumber(dataSet, TAG.physicalDeltaY); // cm
 
-  const pixelElement = dataSet.elements.x7fe00010;
+  const pixelElement = dataSet.elements[TAG.pixelData];
   if (!pixelElement) {
     throw new Error('DICOM PixelData (7FE0,0010) not found');
   }
@@ -79,11 +51,12 @@ export function buildPhilipsVolume(dataSet, arrayBuffer) {
   const totalSlices = Math.floor(totalBytes / sliceBytes);
 
   let tCount = numberOfFrames;
-  let z = zCount;
+  let z: number;
 
   const isPhilipsCartesian = Boolean(zCount && dimFlag === 3);
 
-  if (isPhilipsCartesian) {
+  if (zCount && isPhilipsCartesian) {
+    z = zCount;
     // NumberOfFrames is temporal count; each "frame" packs Z slices
     if (totalSlices !== tCount * z) {
       // Recover from pixel math if tags disagree
@@ -98,7 +71,7 @@ export function buildPhilipsVolume(dataSet, arrayBuffer) {
       }
     }
   } else if (totalSlices > 1) {
-    // Generic multi-frame fallback: treat as T volumes of single slice, or Z stack
+    // Generic multi-frame fallback: treat as a single Z stack
     z = totalSlices;
     tCount = 1;
   } else {
@@ -106,11 +79,7 @@ export function buildPhilipsVolume(dataSet, arrayBuffer) {
     tCount = 1;
   }
 
-  const voxels =
-    bitsAllocated === 8
-      ? new Uint8Array(arrayBuffer, pixelElement.dataOffset, totalBytes)
-      : new Uint8Array(arrayBuffer, pixelElement.dataOffset, totalBytes);
-
+  const voxels = new Uint8Array(arrayBuffer, pixelElement.dataOffset, totalBytes);
   const volumeSize = z * rows * columns;
 
   return {
@@ -127,17 +96,17 @@ export function buildPhilipsVolume(dataSet, arrayBuffer) {
     voxels,
     volumeSize,
     meta: {
-      patientName: dataSet.string('x00100010') || '',
-      patientId: dataSet.string('x00100020') || '',
-      studyDate: dataSet.string('x00080020') || '',
-      modality: dataSet.string('x00080060') || '',
-      manufacturer: dataSet.string('x00080070') || '',
-      imageComments: dataSet.string('x00204000') || '',
+      patientName: readElementString(dataSet, TAG.patientName),
+      patientId: readElementString(dataSet, TAG.patientId),
+      studyDate: readElementString(dataSet, TAG.studyDate),
+      modality: readElementString(dataSet, TAG.modality),
+      manufacturer: readElementString(dataSet, TAG.manufacturer),
+      imageComments: readElementString(dataSet, TAG.imageComments),
     },
   };
 }
 
-export function getVolumeAtTime(volume, t) {
+export function getVolumeAtTime(volume: Volume, t: number): Uint8Array {
   const ti = Math.max(0, Math.min(volume.dims.t - 1, t | 0));
   const start = ti * volume.volumeSize;
   return volume.voxels.subarray(start, start + volume.volumeSize);
@@ -146,7 +115,11 @@ export function getVolumeAtTime(volume, t) {
 /**
  * Echo-style display: window/level + soft contrast curve (closer to cart display).
  */
-export function applyEchoDisplay(value, windowCenter, windowWidth) {
+export function applyEchoDisplay(
+  value: number,
+  windowCenter?: number | null,
+  windowWidth?: number | null
+): number {
   let v = applyWindowLevel(value, windowCenter, windowWidth) / 255;
   // Lift mid-grays, gentle gamma like ultrasound cart post-processing
   v = Math.pow(Math.max(0, v), 0.85);
@@ -158,13 +131,19 @@ export function applyEchoDisplay(value, windowCenter, windowWidth) {
 /**
  * Draw a raw intensity slice onto a canvas with window/level.
  */
-export function renderSliceToCanvas(canvas, slice, windowCenter, windowWidth) {
+export function renderSliceToCanvas(
+  canvas: HTMLCanvasElement | null,
+  slice: { data: Uint8Array; width: number; height: number } | null,
+  windowCenter?: number | null,
+  windowWidth?: number | null
+): void {
   if (!canvas || !slice) return;
   const { data, width, height } = slice;
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
 
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return;
   const imageData = ctx.createImageData(width, height);
   const rgba = imageData.data;
 
@@ -180,7 +159,7 @@ export function renderSliceToCanvas(canvas, slice, windowCenter, windowWidth) {
   ctx.putImageData(imageData, 0, 0);
 }
 
-export function physicalSizeMm(volume) {
+export function physicalSizeMm(volume: Pick<Volume, 'dims' | 'spacingCm'>): VoxelCoord {
   const { dims, spacingCm } = volume;
   return {
     x: dims.x * spacingCm.x * 10,

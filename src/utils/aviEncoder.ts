@@ -1,18 +1,18 @@
 /** Minimal Motion-JPEG AVI muxer (no extra dependencies). */
 
-function u16(n) {
+function u16(n: number): Uint8Array {
   const b = new Uint8Array(2);
   new DataView(b.buffer).setUint16(0, n >>> 0, true);
   return b;
 }
 
-function u32(n) {
+function u32(n: number): Uint8Array {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, n >>> 0, true);
   return b;
 }
 
-function fourcc(s) {
+function fourcc(s: string): Uint8Array {
   return new Uint8Array([
     s.charCodeAt(0),
     s.charCodeAt(1),
@@ -21,7 +21,7 @@ function fourcc(s) {
   ]);
 }
 
-function concat(chunks) {
+function concat(chunks: Uint8Array[]): Uint8Array {
   const len = chunks.reduce((s, c) => s + c.length, 0);
   const out = new Uint8Array(len);
   let o = 0;
@@ -32,22 +32,21 @@ function concat(chunks) {
   return out;
 }
 
-function padEven(bytes) {
+function padEven(bytes: Uint8Array): Uint8Array {
   if (bytes.length % 2 === 0) return bytes;
   const p = new Uint8Array(bytes.length + 1);
   p.set(bytes);
   return p;
 }
 
-function list(type, data) {
+function list(type: string, data: Uint8Array): Uint8Array {
   return concat([fourcc('LIST'), u32(data.length + 4), fourcc(type), data]);
 }
 
-/**
- * @param {Uint8Array[]} jpegFrames
- * @param {{ width: number, height: number, fps?: number }} opts
- */
-export function encodeMjpegAvi(jpegFrames, { width, height, fps = 20 }) {
+export function encodeMjpegAvi(
+  jpegFrames: Uint8Array[],
+  { width, height, fps = 20 }: { width: number; height: number; fps?: number }
+): Uint8Array {
   if (!jpegFrames?.length) {
     throw new Error('No frames to encode');
   }
@@ -59,8 +58,8 @@ export function encodeMjpegAvi(jpegFrames, { width, height, fps = 20 }) {
   const maxBytes = frames.reduce((m, f) => Math.max(m, f.length), 0);
   const n = frames.length;
 
-  const moviParts = [];
-  const indexParts = [];
+  const moviParts: Uint8Array[] = [];
+  const indexParts: Uint8Array[] = [];
   let offset = 4;
   for (const jpeg of frames) {
     moviParts.push(fourcc('00dc'), u32(jpeg.length), jpeg);
