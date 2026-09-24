@@ -16,12 +16,14 @@ import VolumePanel from './mpr/panels/VolumePanel';
 import ExportPanel from './mpr/panels/ExportPanel';
 import AnnulusPanel from './mpr/panels/AnnulusPanel';
 import SegmentationPanel from './mpr/panels/SegmentationPanel';
+import AiPanel from './mpr/panels/AiPanel';
 import useViewerSettings from './mpr/hooks/useViewerSettings';
 import useMeasurements from './mpr/hooks/useMeasurements';
 import useCine from './mpr/hooks/useCine';
 import useExports from './mpr/hooks/useExports';
 import useAnnulus from './mpr/hooks/useAnnulus';
 import useSegmentation from './mpr/hooks/useSegmentation';
+import useAiSegmentation from './mpr/hooks/useAiSegmentation';
 import { FIT_ZOOM } from './mpr/constants';
 import {
   Container,
@@ -67,6 +69,13 @@ const MPRViewer = () => {
     onFinish: () => actions.set({ tool: 'navigate' }),
   });
   const seg = useSegmentation({ volume, timeIndex });
+  const ai = useAiSegmentation({
+    volume,
+    timeIndex,
+    mprCenter,
+    annulusFit: annulus.fit,
+    addMasks: seg.addMasks,
+  });
 
   // useExports needs setPlaying and useCine needs `exporting`; route the
   // setter through a ref so the two hooks can reference each other.
@@ -226,6 +235,7 @@ const MPRViewer = () => {
             frameCount={volume.dims.t}
           />
         )}
+        {section('ai', 'AI segmentation', <AiPanel ai={ai} hasAnnulus={Boolean(annulus.fit)} />)}
         {section(
           'image',
           'Image',
