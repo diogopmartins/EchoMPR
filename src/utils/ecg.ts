@@ -16,6 +16,101 @@ function channelLooksLikeEcg(label: string): boolean {
   );
 }
 
+function movingAverage(x: ArrayLike<number>, win: number): Float32Array {
+  const n = x.length;
+  const out = new Float32Array(n);
+  const half = Math.max(0, Math.floor(win / 2));
+  let acc = 0;
+  let lo = 0;
+  let hi = -1;
+  for (let i = 0; i < n; i++) {
+    const a = Math.max(0, i - half);
+    const b = Math.min(n - 1, i + half);
+    while (hi < b) acc += x[++hi];
+    while (lo < a) acc -= x[lo++];
+    out[i] = acc / (hi - lo + 1);
+  }
+  return out;
+}
+
+function quantile(x: Float32Array, q: number): number {
+  const sorted = Float32Array.from(x).sort();
+  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+}
+
+/**
+ * Find R peaks with a light Pan–Tompkins style detector: remove baseline
+ * wander, square the slope, integrate over ~120 ms, threshold, then take the
+ * largest deflection (in the dominant QRS polarity) inside each detection.
+ * Returns sample indices in ascending order.
+ */
+export function detectRPeaks(samples: ArrayLike<number>, sampleHz: number): number[] {
+  const n = samples.length;
+  if (!sampleHz || n < sampleHz * 0.5) return [];
+
+  const baseline = movingAverage(samples, Math.round(sampleHz * 0.2));
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = samples[i] - baseline[i];
+
+  const slope = new Float32Array(n);
+  for (let i = 1; i < n - 1; i++) {
+    const d = x[i + 1] - x[i - 1];
+    slope[i] = d * d;
+  }
+  const energy = movingAverage(slope, Math.round(sampleHz * 0.12));
+
+  const peak = quantile(energy, 0.99);
+  if (!(peak > 0)) return [];
+  const threshold = 0.3 * peak;
+
+  // Dominant QRS polarity: some leads show R as a downward deflection.
+  let maxPos = 0;
+  let maxNeg = 0;
+  for (let i = 0; i < n; i++) {
+    if (x[i] > maxPos) maxPos = x[i];
+    if (-x[i] > maxNeg) maxNeg = -x[i];
+  }
+  const sign = maxNeg > maxPos * 1.2 ? -1 : 1;
+
+  const refractory = Math.round(sampleHz * 0.25);
+  const search = Math.round(sampleHz * 0.06);
+  const beats: number[] = [];
+  let i = 0;
+  while (i < n) {
+    if (energy[i] < threshold) {
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < n && energy[end] >= threshold) end++;
+    let best = -1;
+    let bestVal = -Infinity;
+    for (let k = Math.max(0, i - search); k < Math.min(n, end + search); k++) {
+      const v = sign * x[k];
+      if (v > bestVal) {
+        bestVal = v;
+        best = k;
+      }
+    }
+    const last = beats[beats.length - 1];
+    if (last === undefined || best - last >= refractory) {
+      beats.push(best);
+    } else if (sign * x[best] > sign * x[last]) {
+      beats[beats.length - 1] = best;
+    }
+    i = end + 1;
+  }
+  return beats;
+}
+
+/** Heart rate from the median R–R interval, or null with fewer than two beats. */
+export function heartRateFromBeats(beats: number[], sampleHz: number): number | null {
+  if (beats.length < 2 || !sampleHz) return null;
+  const rr = beats.slice(1).map((b, i) => b - beats[i]).sort((a, b) => a - b);
+  const median = rr[Math.floor(rr.length / 2)];
+  return median > 0 ? (60 * sampleHz) / median : null;
+}
+
 /**
  * Standard DICOM Waveform Sequence (5400,0100), used by many ultrasound carts.
  */
@@ -34,6 +129,7 @@ export function parseDicomWaveform(dataSet: DataSet, arrayBuffer: ArrayBuffer): 
     if (!nSamp || !freq || !waveEl || nSamp < 8) continue;
 
     let label = 'ECG';
+    let chan = 0;
     const chSeq = ds.elements.x003a0200;
     if (chSeq?.items?.length) {
       const labels = chSeq.items.map((ch) => {
@@ -52,6 +148,7 @@ export function parseDicomWaveform(dataSet: DataSet, arrayBuffer: ArrayBuffer): 
         return meaning;
       });
       const ecgIdx = labels.findIndex(channelLooksLikeEcg);
+      if (ecgIdx >= 0 && ecgIdx < nChan) chan = ecgIdx;
       label = labels[ecgIdx >= 0 ? ecgIdx : 0] || 'ECG';
     }
 
@@ -61,7 +158,6 @@ export function parseDicomWaveform(dataSet: DataSet, arrayBuffer: ArrayBuffer): 
     if (usable < 8) continue;
 
     const view = new DataView(arrayBuffer, waveEl.dataOffset, usable * bytesPer);
-    const chan = 0;
     const samples = new Float32Array(nSamp);
     for (let i = 0; i < nSamp; i++) {
       const idx = i * nChan + chan;
@@ -69,14 +165,16 @@ export function parseDicomWaveform(dataSet: DataSet, arrayBuffer: ArrayBuffer): 
       samples[i] = bytesPer === 2 ? view.getInt16(idx * 2, true) : view.getInt8(idx);
     }
 
+    const beats = detectRPeaks(samples, freq);
     return {
       source: 'dicom-waveform',
       label,
       samples,
       sampleHz: freq,
       durationMs: (nSamp / freq) * 1000,
-      beats: [],
-      heartRateBpm: readElementNumber(dataSet, TAG.heartRate),
+      beats,
+      heartRateBpm:
+        readElementNumber(dataSet, TAG.heartRate) ?? heartRateFromBeats(beats, freq),
     };
   }
   return null;
