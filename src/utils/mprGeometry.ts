@@ -1,6 +1,24 @@
 /** Oblique MPR geometry helpers (mm-space basis + voxel sampling). */
+import type {
+  AxisKey,
+  Basis,
+  ImageDir,
+  ImagePoint,
+  MeasurementPlane,
+  SampledSlice,
+  Vec3,
+  ViewAxis,
+  Volume,
+  VolumeDims,
+  VoxelCoord,
+} from './types';
 
-export function identityBasis() {
+type VolumeGeom = Pick<Volume, 'dims' | 'spacingCm'>;
+type SampleVolume = Pick<Volume, 'dims' | 'spacingCm' | 'voxels' | 'volumeSize'>;
+
+const AXIS_KEYS: AxisKey[] = ['x', 'y', 'z'];
+
+export function identityBasis(): Basis {
   return {
     x: [1, 0, 0],
     y: [0, 1, 0],
@@ -8,20 +26,20 @@ export function identityBasis() {
   };
 }
 
-export function vecLen(v) {
+export function vecLen(v: Vec3): number {
   return Math.hypot(v[0], v[1], v[2]);
 }
 
-export function normalize(v) {
+export function normalize(v: Vec3): Vec3 {
   const L = vecLen(v) || 1;
   return [v[0] / L, v[1] / L, v[2] / L];
 }
 
-export function dot(a, b) {
+export function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-export function cross(a, b) {
+export function cross(a: Vec3, b: Vec3): Vec3 {
   return [
     a[1] * b[2] - a[2] * b[1],
     a[2] * b[0] - a[0] * b[2],
@@ -29,20 +47,20 @@ export function cross(a, b) {
   ];
 }
 
-export function scale(v, s) {
+export function scale(v: Vec3, s: number): Vec3 {
   return [v[0] * s, v[1] * s, v[2] * s];
 }
 
-export function add(a, b) {
+export function add(a: Vec3, b: Vec3): Vec3 {
   return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 }
 
-export function sub(a, b) {
+export function sub(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
 /** Rodrigues rotation of vector `v` around unit axis `k` by `angle` radians. */
-export function rotateAroundAxis(v, k, angle) {
+export function rotateAroundAxis(v: Vec3, k: Vec3, angle: number): Vec3 {
   const c = Math.cos(angle);
   const s = Math.sin(angle);
   const t = 1 - c;
@@ -63,9 +81,9 @@ export function rotateAroundAxis(v, k, angle) {
  * Rotate the two in-plane axes around `normalKey` ('x'|'y'|'z').
  * Keeps planes mutually orthogonal.
  */
-export function rotateBasisInPlane(basis, normalKey, angleRad) {
+export function rotateBasisInPlane(basis: Basis, normalKey: AxisKey, angleRad: number): Basis {
   const normal = normalize(basis[normalKey]);
-  const keys = ['x', 'y', 'z'].filter((k) => k !== normalKey);
+  const keys = AXIS_KEYS.filter((k) => k !== normalKey);
   const a = normalize(rotateAroundAxis(basis[keys[0]], normal, angleRad));
   let b = normalize(cross(normal, a));
   if (dot(b, basis[keys[1]]) < 0) b = scale(b, -1);
@@ -80,14 +98,19 @@ export function rotateBasisInPlane(basis, normalKey, angleRad) {
 }
 
 /** Drop `point` onto the plane through `planePoint` with `normal`. */
-export function projectPointOntoPlane(volume, point, planePoint, normal) {
+export function projectPointOntoPlane(
+  volume: VolumeGeom,
+  point: VoxelCoord,
+  planePoint: VoxelCoord,
+  normal: Vec3
+): VoxelCoord {
   const n = normalize(normal);
   const p = voxelToMm(volume, point);
   const o = voxelToMm(volume, planePoint);
   return clampCenter(volume, mmToVoxel(volume, sub(p, scale(n, dot(sub(p, o), n)))));
 }
 
-export function spacingMm(volume) {
+export function spacingMm(volume: VolumeGeom): VoxelCoord {
   return {
     x: volume.spacingCm.x * 10,
     y: volume.spacingCm.y * 10,
@@ -95,12 +118,12 @@ export function spacingMm(volume) {
   };
 }
 
-export function voxelToMm(volume, c) {
+export function voxelToMm(volume: VolumeGeom, c: VoxelCoord): Vec3 {
   const s = spacingMm(volume);
   return [c.x * s.x, c.y * s.y, c.z * s.z];
 }
 
-export function mmToVoxel(volume, m) {
+export function mmToVoxel(volume: VolumeGeom, m: Vec3): VoxelCoord {
   const s = spacingMm(volume);
   return {
     x: m[0] / s.x,
@@ -109,7 +132,7 @@ export function mmToVoxel(volume, m) {
   };
 }
 
-export function clampCenter(volume, c) {
+export function clampCenter(volume: VolumeGeom, c: VoxelCoord): VoxelCoord {
   return {
     x: Math.min(volume.dims.x - 1, Math.max(0, c.x)),
     y: Math.min(volume.dims.y - 1, Math.max(0, c.y)),
@@ -117,7 +140,13 @@ export function clampCenter(volume, c) {
   };
 }
 
-function trilinear(vol, dims, x, y, z) {
+function trilinear(
+  vol: Uint8Array,
+  dims: VolumeDims,
+  x: number,
+  y: number,
+  z: number
+): number {
   if (x < 0 || y < 0 || z < 0 || x > dims.x - 1 || y > dims.y - 1 || z > dims.z - 1) {
     return 0;
   }
@@ -131,7 +160,7 @@ function trilinear(vol, dims, x, y, z) {
   const fy = y - y0;
   const fz = z - z0;
 
-  const idx = (xi, yi, zi) => zi * dims.y * dims.x + yi * dims.x + xi;
+  const idx = (xi: number, yi: number, zi: number) => zi * dims.y * dims.x + yi * dims.x + xi;
   const c000 = vol[idx(x0, y0, z0)];
   const c100 = vol[idx(x1, y0, z0)];
   const c010 = vol[idx(x0, y1, z0)];
@@ -153,11 +182,14 @@ function trilinear(vol, dims, x, y, z) {
 /**
  * Build in-plane right/down axes with a stable world-up so reference lines can tilt.
  */
-export function planeAxes(normal, worldUpHint = [0, 0, 1]) {
-  let N = normalize(normal);
+export function planeAxes(
+  normal: Vec3,
+  worldUpHint: Vec3 = [0, 0, 1]
+): { right: Vec3; down: Vec3; normal: Vec3 } {
+  const N = normalize(normal);
   let up = sub(worldUpHint, scale(N, dot(worldUpHint, N)));
   if (vecLen(up) < 1e-4) {
-    const alt = Math.abs(N[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    const alt: Vec3 = Math.abs(N[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
     up = sub(alt, scale(N, dot(alt, N)));
   }
   up = normalize(up);
@@ -166,7 +198,14 @@ export function planeAxes(normal, worldUpHint = [0, 0, 1]) {
   return { right, down, normal: N };
 }
 
-export function viewSpec(axis) {
+export interface ViewSpec {
+  normalKey: AxisKey;
+  lineA: { key: AxisKey; color: string };
+  lineB: { key: AxisKey; color: string };
+  worldUp: Vec3;
+}
+
+export function viewSpec(axis: ViewAxis): ViewSpec {
   // normalKey = this view's plane normal in the triad
   // lineA/lineB = the other two planes (for reference line colors)
   if (axis === 'axial') {
@@ -194,7 +233,7 @@ export function viewSpec(axis) {
 }
 
 /** In-plane FOV (mm) for a view so we don't undersample vs native voxels. */
-function viewFovMm(volume, axis) {
+function viewFovMm(volume: VolumeGeom, axis: ViewAxis): { w: number; h: number } {
   const sp = spacingMm(volume);
   const { dims } = volume;
   if (axis === 'axial') {
@@ -206,7 +245,7 @@ function viewFovMm(volume, axis) {
   return { w: dims.y * sp.y, h: dims.z * sp.z };
 }
 
-export function isNearAxisAligned(basis, eps = 0.985) {
+export function isNearAxisAligned(basis: Basis, eps = 0.985): boolean {
   return (
     Math.abs(basis.x[0]) > eps &&
     Math.abs(basis.y[1]) > eps &&
@@ -219,7 +258,23 @@ export function isNearAxisAligned(basis, eps = 0.985) {
  * options: { width, height, zoom, slabMm, slabMode }
  * slabMode: 'mean' (thick slice) or 'mip' (thin MIP).
  */
-export function sampleObliquePlane(volume, t, center, basis, axis, options = {}) {
+export interface SampleOptions {
+  width?: number;
+  height?: number;
+  zoom?: number;
+  viewOrigin?: VoxelCoord;
+  slabMm?: number;
+  slabMode?: 'mean' | 'mip';
+}
+
+export function sampleObliquePlane(
+  volume: SampleVolume,
+  t: number,
+  center: VoxelCoord,
+  basis: Basis,
+  axis: ViewAxis,
+  options: SampleOptions = {}
+): SampledSlice {
   const spec = viewSpec(axis);
   const normal = basis[spec.normalKey];
   const nHat = normalize(normal);
@@ -292,7 +347,7 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
     }
   }
 
-  const toImageDir = (planeNormal) => {
+  const toImageDir = (planeNormal: Vec3): ImageDir => {
     let dir = cross(planeNormal, normal);
     if (vecLen(dir) < 1e-6) return { u: 1, v: 0 };
     dir = normalize(dir);
@@ -335,7 +390,14 @@ export function sampleObliquePlane(volume, t, center, basis, axis, options = {})
 }
 
 /** Image pixel → 3D millimetres on the sampled plane. */
-export function imageToWorldMm(volume, slice, imgU, imgV) {
+type SliceFrame = Pick<SampledSlice, 'viewOrigin' | 'width' | 'height' | 'right' | 'down' | 'stepX' | 'stepY'>;
+
+export function imageToWorldMm(
+  volume: VolumeGeom,
+  slice: SliceFrame,
+  imgU: number,
+  imgV: number
+): Vec3 {
   const originMm = voxelToMm(volume, slice.viewOrigin);
   const cx = (slice.width - 1) / 2;
   const cy = (slice.height - 1) / 2;
@@ -346,7 +408,7 @@ export function imageToWorldMm(volume, slice, imgU, imgV) {
 }
 
 /** 3D millimetres → image pixel on the current sample. */
-export function worldMmToImage(volume, slice, mm) {
+export function worldMmToImage(volume: VolumeGeom, slice: SliceFrame, mm: Vec3): ImagePoint {
   const originMm = voxelToMm(volume, slice.viewOrigin);
   const delta = sub(mm, originMm);
   const cx = (slice.width - 1) / 2;
@@ -357,16 +419,21 @@ export function worldMmToImage(volume, slice, mm) {
   };
 }
 
-export function distanceMm(a, b) {
+export function distanceMm(a: Vec3, b: Vec3): number {
   return vecLen(sub(a, b));
 }
 
-function copyVec3(v) {
+function copyVec3(v: Vec3): Vec3 {
   return [v[0], v[1], v[2]];
 }
 
 /** Freeze the 2D plane a measurement was drawn on so it can hide/restore later. */
-export function snapshotMeasurementPlane(volume, axis, mprCenter, mprBasis) {
+export function snapshotMeasurementPlane(
+  volume: VolumeGeom,
+  axis: ViewAxis,
+  mprCenter: VoxelCoord,
+  mprBasis: Basis
+): MeasurementPlane {
   const spec = viewSpec(axis);
   const normal = normalize(mprBasis[spec.normalKey]);
   return {
@@ -387,7 +454,12 @@ export function snapshotMeasurementPlane(volume, axis, mprCenter, mprBasis) {
  * (same orientation and same offset along the plane normal). In-plane panning
  * keeps the measurement visible; tilt or scroll along the normal hides it.
  */
-export function measurementOnCurrentPlane(volume, measurement, mprCenter, mprBasis) {
+export function measurementOnCurrentPlane(
+  volume: VolumeGeom,
+  measurement: Partial<MeasurementPlane> & { axis: ViewAxis },
+  mprCenter: VoxelCoord,
+  mprBasis: Basis
+): boolean {
   if (!measurement?.normal || !measurement?.originMm) return false;
   const spec = viewSpec(measurement.axis);
   const n = normalize(mprBasis[spec.normalKey]);
@@ -400,7 +472,7 @@ export function measurementOnCurrentPlane(volume, measurement, mprCenter, mprBas
 }
 
 /** Millimetres → unit cube coords used by the 3D volume mesh ([-0.5, 0.5]). */
-export function mmToUnitBox(volume, mm) {
+export function mmToUnitBox(volume: VolumeGeom, mm: Vec3): Vec3 {
   const v = mmToVoxel(volume, mm);
   return [
     (v.x + 0.5) / volume.dims.x - 0.5,
@@ -410,7 +482,7 @@ export function mmToUnitBox(volume, mm) {
 }
 
 /** Planar polygon area (mm²) using the slice's in-plane axes. */
-export function polygonAreaMm2(points, right, down) {
+export function polygonAreaMm2(points: Vec3[] | null | undefined, right: Vec3, down: Vec3): number {
   if (!points || points.length < 3) return 0;
   const pts = points.map((p) => [dot(p, right), dot(p, down)]);
   let area = 0;
@@ -422,7 +494,13 @@ export function polygonAreaMm2(points, right, down) {
 }
 
 /** Move center along the view normal by `deltaVoxels` (approx). */
-export function nudgeCenterAlongNormal(volume, center, basis, normalKey, delta) {
+export function nudgeCenterAlongNormal(
+  volume: VolumeGeom,
+  center: VoxelCoord,
+  basis: Basis,
+  normalKey: AxisKey,
+  delta: number
+): VoxelCoord {
   const n = basis[normalKey];
   const sp = spacingMm(volume);
   const mm = voxelToMm(volume, center);
@@ -432,15 +510,15 @@ export function nudgeCenterAlongNormal(volume, center, basis, normalKey, delta) 
 
 /** Translate center in the view plane from image delta (pixels). */
 export function translateCenterInPlane(
-  volume,
-  center,
-  basis,
-  axis,
-  dImgU,
-  dImgV,
-  stepX,
-  stepY
-) {
+  volume: VolumeGeom,
+  center: VoxelCoord,
+  basis: Basis,
+  axis: ViewAxis,
+  dImgU: number,
+  dImgV: number,
+  stepX?: number,
+  stepY?: number
+): VoxelCoord {
   const spec = viewSpec(axis);
   const { right, down } = planeAxes(basis[spec.normalKey], spec.worldUp);
   const sp = spacingMm(volume);
@@ -457,18 +535,18 @@ export function translateCenterInPlane(
  * perpendicular moves the center along that plane's normal.
  */
 export function movePlaneByLineDrag(
-  volume,
-  center,
-  basis,
-  axis,
-  planeKey,
-  dirU,
-  dirV,
-  dImgU,
-  dImgV,
-  stepX,
-  stepY
-) {
+  volume: VolumeGeom,
+  center: VoxelCoord,
+  basis: Basis,
+  axis: ViewAxis,
+  planeKey: AxisKey,
+  dirU: number,
+  dirV: number,
+  dImgU: number,
+  dImgV: number,
+  stepX?: number,
+  stepY?: number
+): VoxelCoord {
   const spec = viewSpec(axis);
   const { right, down } = planeAxes(basis[spec.normalKey], spec.worldUp);
   const sp = spacingMm(volume);

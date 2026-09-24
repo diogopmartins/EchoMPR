@@ -36,6 +36,24 @@ npm start
 
 Open [http://localhost:3000](http://localhost:3000), upload your QLAB Cartesian DICOM, and the app opens the MPR workspace.
 
+### Checks
+
+```bash
+npm test -- --watchAll=false   # unit tests
+npm run typecheck              # TypeScript (src/utils is TS, components are JS for now)
+DICOM_FILE=path/to/file.dcm npm run smoke   # parse a real export with the app's loader
+```
+
+The smoke test defaults to `./1.dcm` and is skipped when that file does not exist.
+It prints the dimensions, spacing, frame time, and ECG summary, and checks that
+`PixelData` holds exactly `T × Z` slices.
+
+### Layout
+
+- `src/utils/` — TypeScript: DICOM tags, Philips volume loader, MPR geometry, ECG, measurements, exports
+- `src/components/MPRViewer.js` — workspace shell
+- `src/components/mpr/` — slice/3D panes, sidebar panels, and hooks (`useViewerSettings`, `useMeasurements`, `useCine`, `useExports`)
+
 ## Deploy to GitHub Pages
 
 1. Enable **GitHub Pages** → Source: **GitHub Actions**
@@ -55,6 +73,7 @@ Site URL (after first deploy):
 ## Stack
 
 - React 18 (Create React App)
+- TypeScript for the data/geometry layer (`src/utils`)
 - `dicom-parser` + custom Philips3D volume loader
 - Canvas MPR panes
 - Three.js / React Three Fiber volume raymarching

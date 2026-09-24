@@ -1,1610 +1,38 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
-import styled from 'styled-components';
-import { Canvas } from '@react-three/fiber';
-import {
-  Play,
-  Pause,
-  Download,
-  Trash2,
-  Maximize2,
-  Minimize2,
-  Camera,
-  Film,
-  RotateCcw,
-  FlipHorizontal,
-  ChevronDown,
-} from 'lucide-react';
+import React, { useRef } from 'react';
 import { useEcho } from '../context/EchoContext';
-import { renderSliceToCanvas, physicalSizeMm } from '../utils/philipsVolume';
+import { physicalSizeMm } from '../utils/philipsVolume';
+import { getVolumeEcg } from '../utils/ecg';
+import MPRSlicePane from './mpr/MPRSlicePane';
+import VolumePane from './mpr/VolumePane';
+import EcgStrip from './mpr/EcgStrip';
+import SidebarSection from './mpr/SidebarSection';
+import ViewContextMenu from './mpr/ViewContextMenu';
+import CinePanel from './mpr/panels/CinePanel';
+import PlanesPanel from './mpr/panels/PlanesPanel';
+import ToolsPanel from './mpr/panels/ToolsPanel';
+import MeasurementsPanel from './mpr/panels/MeasurementsPanel';
+import ImagePanel from './mpr/panels/ImagePanel';
+import VolumePanel from './mpr/panels/VolumePanel';
+import ExportPanel from './mpr/panels/ExportPanel';
+import useViewerSettings from './mpr/hooks/useViewerSettings';
+import useMeasurements from './mpr/hooks/useMeasurements';
+import useCine from './mpr/hooks/useCine';
+import useExports from './mpr/hooks/useExports';
+import { FIT_ZOOM } from './mpr/constants';
 import {
-  sampleObliquePlane,
-  rotateBasisInPlane,
-  translateCenterInPlane,
-  movePlaneByLineDrag,
-  nudgeCenterAlongNormal,
-  projectPointOntoPlane,
-  viewSpec,
-  imageToWorldMm,
-  worldMmToImage,
-  distanceMm,
-  polygonAreaMm2,
-  planeAxes,
-  snapshotMeasurementPlane,
-  measurementOnCurrentPlane,
-  add as addVec,
-  sub as subVec,
-} from '../utils/mprGeometry';
-import { exportToNRRD } from '../utils/dicomParser';
-import {
-  getVolumeEcg,
-  frameToSampleIndex,
-  sampleIndexToFrame,
-} from '../utils/ecg';
-import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
-import { encodeMjpegAvi } from '../utils/aviEncoder';
-import {
-  captureElementToCanvas,
-  canvasToBlob,
-  canvasToJpegBytes,
-  downloadBlob,
-  waitPaint,
-  waitMs,
-} from '../utils/captureLayout';
-
-const Container = styled.div`
-  height: 100%;
-  display: flex;
-  flex-direction: row;
-  background: #0f1419;
-  color: #e8e6e3;
-  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
-  min-height: 0;
-`;
-
-const ControlSidebar = styled.aside`
-  width: 248px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-  padding: 0.85rem 0.8rem 1rem;
-  background: #1a222c;
-  border-right: 1px solid #2a3542;
-  overflow-y: auto;
-`;
-
-const Viewport = styled.div`
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-`;
-
-const EcgBar = styled.div`
-  flex-shrink: 0;
-  height: 76px;
-  background: #080c10;
-  border-top: 1px solid #2a3542;
-  position: relative;
-`;
-
-const EcgCanvas = styled.canvas`
-  width: 100%;
-  height: 100%;
-  display: block;
-  cursor: pointer;
-`;
-
-const EcgLegend = styled.div`
-  position: absolute;
-  top: 5px;
-  left: 10px;
-  z-index: 1;
-  font-size: 0.7rem;
-  color: #8ad4c4;
-  pointer-events: none;
-  text-shadow: 0 1px 2px #000;
-`;
-
-const ToolGroup = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding-bottom: 0.85rem;
-  border-bottom: 1px solid #243040;
-
-  &:last-of-type {
-    border-bottom: none;
-    padding-bottom: 0;
-  }
-`;
-
-const AccordionHeader = styled.button`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.4rem;
-  width: 100%;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  font-size: 0.65rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #7a8a99;
-  font-weight: 600;
-  font-family: inherit;
-
-  svg {
-    flex-shrink: 0;
-    transition: transform 0.15s ease;
-    transform: rotate(${(p) => (p.$open ? '0deg' : '-90deg')});
-  }
-`;
-
-const MenuRoot = styled.div`
-  position: fixed;
-  z-index: 40;
-  min-width: 188px;
-  padding: 0.3rem 0;
-  background: #1c2632;
-  border: 1px solid #3a4a5c;
-  border-radius: 8px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-`;
-
-const MenuItem = styled.button.attrs({ type: 'button' })`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: 100%;
-  background: ${(p) => (p.$active ? 'rgba(61, 154, 139, 0.28)' : 'transparent')};
-  border: none;
-  color: ${(p) => (p.$active ? '#d7fff6' : '#e8e6e3')};
-  text-align: left;
-  padding: 0.38rem 0.75rem;
-  font-size: 0.8rem;
-  font-family: inherit;
-  cursor: pointer;
-
-  &:hover {
-    background: ${(p) => (p.$active ? 'rgba(61, 154, 139, 0.38)' : '#243040')};
-  }
-`;
-
-const MenuSep = styled.div`
-  height: 1px;
-  background: #2a3542;
-  margin: 0.28rem 0;
-`;
-
-const MenuHint = styled.div`
-  padding: 0.2rem 0.75rem 0.35rem;
-  font-size: 0.65rem;
-  color: #7a8a99;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-`;
-
-const SliderRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-`;
-
-const ButtonRow = styled.div`
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-`;
-
-const Label = styled.label`
-  font-size: 0.75rem;
-  color: #9aa5b1;
-  white-space: nowrap;
-  min-width: ${(p) => p.$wide || '4.6rem'};
-  flex-shrink: 0;
-`;
-
-const Slider = styled.input`
-  flex: 1;
-  min-width: 0;
-  accent-color: #3d9a8b;
-`;
-
-const Button = styled.button`
-  background: ${(p) => (p.$active ? '#3d9a8b' : '#243040')};
-  border: 1px solid ${(p) => (p.$active ? '#4db8a6' : '#3a4a5c')};
-  color: #e8e6e3;
-  border-radius: 6px;
-  padding: 0.35rem 0.5rem;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3rem;
-  font-size: 0.8rem;
-  flex: ${(p) => (p.$grow ? '1 1 auto' : '0 1 auto')};
-  min-width: 0;
-
-  &:hover {
-    background: ${(p) => (p.$active ? '#45a994' : '#2e3d50')};
-  }
-
-  &:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-`;
-
-const Select = styled.select`
-  background: #243040;
-  border: 1px solid #3a4a5c;
-  color: #e8e6e3;
-  border-radius: 6px;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-  width: 100%;
-`;
-
-const Meta = styled.div`
-  margin-top: auto;
-  padding-top: 0.6rem;
-  font-size: 0.72rem;
-  color: #9aa5b1;
-  line-height: 1.45;
-`;
-
-const MeasureList = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  max-height: 11rem;
-  overflow-y: auto;
-`;
-
-const MeasureRow = styled.div`
-  display: grid;
-  grid-template-columns: 2.1rem 1fr auto;
-  align-items: center;
-  gap: 0.35rem;
-  width: 100%;
-  text-align: left;
-  background: ${(p) => (p.$active ? hexToRgba(p.$color, 0.22) : '#243040')};
-  border: 1px solid ${(p) => (p.$active ? p.$color : p.$visible ? '#3a4a5c' : '#2a3542')};
-  box-shadow: inset 3px 0 0 ${(p) => p.$color || '#ffd54f'};
-  color: ${(p) => (p.$visible ? '#e8e6e3' : '#7a8a99')};
-  border-radius: 6px;
-  padding: 0.28rem 0.35rem 0.28rem 0.55rem;
-  cursor: pointer;
-  font-size: 0.75rem;
-`;
-
-const MeasureLabel = styled.strong`
-  color: ${(p) => p.$color || '#ffd54f'};
-  font-weight: 700;
-`;
-
-const MeasureValue = styled.span`
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-`;
-
-const MeasureMetaLine = styled.span`
-  display: block;
-  font-size: 0.65rem;
-  color: #7a8a99;
-`;
-
-const MeasureDelete = styled.span`
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  color: #9aa5b1;
-
-  &:hover {
-    background: #3a2a30;
-    color: #f0b4b4;
-  }
-`;
-
-const Grid = styled.div`
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 2px;
-  min-height: 0;
-  background: #2a3542;
-  position: relative;
-`;
-
-const Pane = styled.div`
-  position: relative;
-  background: #000;
-  overflow: hidden;
-  min-height: 0;
-  box-shadow: inset 0 0 0 2px ${(p) => p.$borderColor || 'transparent'};
-  ${(p) => (p.$hidden ? 'visibility: hidden; pointer-events: none;' : '')}
-  ${(p) =>
-    p.$maximized
-      ? `
-    position: absolute;
-    inset: 0;
-    z-index: 5;
-    visibility: visible;
-    pointer-events: auto;
-  `
-      : ''}
-`;
-
-const PaneLabel = styled.div`
-  position: absolute;
-  top: 8px;
-  left: 10px;
-  z-index: 2;
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #fff;
-  background: ${(p) => p.$color || '#666'};
-  padding: 0.2rem 0.45rem;
-  border-radius: 3px;
-  pointer-events: none;
-  font-weight: 600;
-`;
-
-const SliceCanvas = styled.canvas`
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: fill;
-  cursor: crosshair;
-  image-rendering: auto;
-  background: #000;
-`;
-
-const PaneTools = styled.div`
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 3;
-  display: flex;
-  gap: 4px;
-`;
-
-const IconBtn = styled.button`
-  background: rgba(0, 0, 0, 0.55);
-  border: 1px solid #3a4a5c;
-  color: #e8e6e3;
-  border-radius: 4px;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-
-  &:hover {
-    background: rgba(36, 48, 64, 0.92);
-  }
-`;
-
-const ZoomBadge = styled.div`
-  position: absolute;
-  bottom: 8px;
-  right: 10px;
-  z-index: 2;
-  font-size: 0.7rem;
-  color: #e8e6e3;
-  background: rgba(0, 0, 0, 0.55);
-  padding: 0.15rem 0.4rem;
-  border-radius: 3px;
-  pointer-events: none;
-`;
-
-const Empty = styled.div`
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #9aa5b1;
-  font-size: 1.05rem;
-  padding: 2rem;
-  text-align: center;
-`;
-
-// Standard MPR RGB: sagittal=red (X), coronal=green (Y), axial=blue (Z)
-const AXIS_META = {
-  sagittal: { label: 'Sagittal (X)', short: 'Sag', color: '#e53935', key: 'x' },
-  coronal: { label: 'Coronal (Y)', short: 'Cor', color: '#43a047', key: 'y' },
-  axial: { label: 'Axial (Z)', short: 'Ax', color: '#1e88e5', key: 'z' },
-};
-
-const CROP_PLANES = [
-  { key: 'x', axis: 'sagittal', name: 'Red' },
-  { key: 'y', axis: 'coronal', name: 'Green' },
-  { key: 'z', axis: 'axial', name: 'Blue' },
-];
-
-const MEASURE_COLORS = [
-  '#ffd54f',
-  '#4fc3f7',
-  '#81c784',
-  '#ff8a65',
-  '#ce93d8',
-  '#f48fb1',
-  '#26c6da',
-  '#aed581',
-  '#90caf9',
-  '#ef9a9a',
-  '#fff176',
-  '#b39ddb',
-];
-
-const CINE_RATES = [0.25, 0.5, 0.75, 1];
-
-const DEFAULT_SECTIONS = {
-  cine: true,
-  tools: true,
-  measure: true,
-  planes: true,
-  image: false,
-  volume: false,
-  export: false,
-};
-
-function SidebarSection({ title, open, onToggle, children }) {
-  return (
-    <ToolGroup>
-      <AccordionHeader type="button" onClick={onToggle} $open={open}>
-        <span>{title}</span>
-        <ChevronDown size={13} />
-      </AccordionHeader>
-      {open ? children : null}
-    </ToolGroup>
-  );
-}
-
-function clampMenuPos(x, y, w = 196, h = 320) {
-  return {
-    x: Math.max(8, Math.min(x, window.innerWidth - w - 8)),
-    y: Math.max(8, Math.min(y, window.innerHeight - h - 8)),
-  };
-}
-
-function ViewContextMenu({
-  menu,
-  tool,
-  maximized,
-  showMprLines,
-  useCutPlanes,
-  onAction,
-  onClose,
-}) {
-  if (!menu) return null;
-  const pos = clampMenuPos(menu.x, menu.y);
-  const is3d = menu.pane === 'volume';
-
-  return (
-    <>
-      <div
-        role="presentation"
-        onMouseDown={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 39 }}
-      />
-      <MenuRoot
-        style={{ left: pos.x, top: pos.y }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <MenuHint>{is3d ? '3D view' : '2D view'}</MenuHint>
-        {!is3d && (
-          <>
-            <MenuItem $active={tool === 'navigate'} onClick={() => onAction('nav')}>
-              Nav
-            </MenuItem>
-            <MenuItem $active={tool === 'distance'} onClick={() => onAction('length')}>
-              Length
-            </MenuItem>
-            <MenuItem $active={tool === 'area'} onClick={() => onAction('area')}>
-              Area
-            </MenuItem>
-            <MenuSep />
-          </>
-        )}
-        <MenuItem onClick={() => onAction('max')}>
-          {maximized ? 'Restore 2×2' : 'Maximize'}
-        </MenuItem>
-        {!is3d && (
-          <>
-            <MenuItem onClick={() => onAction('fit')}>Fit zoom</MenuItem>
-            <MenuItem onClick={() => onAction('resetTilt')}>Reset tilt</MenuItem>
-          </>
-        )}
-        {is3d && (
-          <>
-            <MenuItem onClick={() => onAction('reset3d')}>Reset 3D camera</MenuItem>
-            <MenuItem $active={showMprLines} onClick={() => onAction('mprLines')}>
-              {showMprLines ? 'Hide MPR lines' : 'Show MPR lines'}
-            </MenuItem>
-            <MenuItem $active={useCutPlanes} onClick={() => onAction('cuts')}>
-              {useCutPlanes ? 'Cuts off' : 'Cuts on'}
-            </MenuItem>
-          </>
-        )}
-        <MenuSep />
-        <MenuItem onClick={() => onAction('png')}>Save PNG</MenuItem>
-      </MenuRoot>
-    </>
-  );
-}
-
-function hexToRgba(hex, alpha) {
-  const n = (hex || '#ffd54f').replace('#', '');
-  const r = parseInt(n.slice(0, 2), 16);
-  const g = parseInt(n.slice(2, 4), 16);
-  const b = parseInt(n.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function pickMeasureColor(existing) {
-  const used = new Set((existing || []).map((m) => m.color).filter(Boolean));
-  const free = MEASURE_COLORS.find((c) => !used.has(c));
-  return free || MEASURE_COLORS[(existing || []).length % MEASURE_COLORS.length];
-}
-
-function measureColor(m) {
-  return m?.color || MEASURE_COLORS[0];
-}
-
-function getViewLayout(container, canvas) {
-  const rect = container.getBoundingClientRect();
-  const sw = canvas.width || 1;
-  const sh = canvas.height || 1;
-  // Sample buffer matches pane aspect → fill the pane
-  const dw = rect.width;
-  const dh = rect.height;
-  return { rect, sw, sh, scale: dw / sw, dw, dh, ox: 0, oy: 0 };
-}
-
-function drawTiltedLine(ctx, cx, cy, dirU, dirV, halfLen, color) {
-  const len = Math.hypot(dirU, dirV) || 1;
-  const u = dirU / len;
-  const v = dirV / len;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(cx - u * halfLen, cy - v * halfLen);
-  ctx.lineTo(cx + u * halfLen, cy + v * halfLen);
-  ctx.stroke();
-}
-
-function imageToCss(slice, imgU, imgV, dw, dh) {
-  return {
-    x: (imgU / Math.max(1, slice.width - 1)) * dw,
-    y: (imgV / Math.max(1, slice.height - 1)) * dh,
-  };
-}
-
-function cssToImage(slice, x, y, dw, dh) {
-  return {
-    imgU: (x / dw) * (slice.width - 1),
-    imgV: (y / dh) * (slice.height - 1),
-  };
-}
-
-/** Keep rotate handles on-screen along a line through the crosshair. */
-function handleReach(cx, cy, u, v, dw, dh) {
-  const preferred = Math.min(dw, dh) * 0.4;
-  const pad = 18;
-  const hits = [preferred];
-  if (u > 1e-6) hits.push((dw - pad - cx) / u);
-  if (u < -1e-6) hits.push((pad - cx) / u);
-  if (v > 1e-6) hits.push((dh - pad - cy) / v);
-  if (v < -1e-6) hits.push((pad - cy) / v);
-  const ok = hits.filter((t) => t > 14);
-  return ok.length ? Math.min(...ok) : preferred;
-}
-
-function lineHandlesCss(cx, cy, dirU, dirV, dw, dh) {
-  const len = Math.hypot(dirU, dirV) || 1;
-  const u = dirU / len;
-  const v = dirV / len;
-  const r1 = handleReach(cx, cy, u, v, dw, dh);
-  const r2 = handleReach(cx, cy, -u, -v, dw, dh);
-  return [
-    { x: cx + u * r1, y: cy + v * r1 },
-    { x: cx - u * r2, y: cy - v * r2 },
-  ];
-}
-
-function formatDistance(mm) {
-  if (mm < 10) return `${mm.toFixed(1)} mm`;
-  return `${(mm / 10).toFixed(2)} cm`;
-}
-
-function formatArea(mm2) {
-  return `${(mm2 / 100).toFixed(2)} cm²`;
-}
-
-function drawMeasureLabel(ctx, x, y, text, color = '#ffe082') {
-  ctx.font = '600 11px "IBM Plex Sans", "Segoe UI", sans-serif';
-  const padX = 5;
-  const w = ctx.measureText(text).width + padX * 2;
-  const h = 16;
-  const lx = Math.max(4, x - w / 2);
-  const ly = y - 20;
-  ctx.fillStyle = 'rgba(8, 12, 16, 0.78)';
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  if (typeof ctx.roundRect === 'function') ctx.roundRect(lx, ly, w, h, 3);
-  else ctx.rect(lx, ly, w, h);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = color;
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, lx + padX, ly + h / 2);
-}
-
-function distToSegment(px, py, ax, ay, bx, by) {
-  const vx = bx - ax;
-  const vy = by - ay;
-  const l2 = vx * vx + vy * vy || 1;
-  const t = Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / l2));
-  return Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
-}
-
-function measurementCaption(m) {
-  if (m.type === 'distance') {
-    return formatDistance(distanceMm(m.points[0], m.points[1]));
-  }
-  const spec = viewSpec(m.axis);
-  const { right, down } = planeAxes(m.normal || [0, 0, 1], spec.worldUp);
-  return formatArea(polygonAreaMm2(m.points, right, down));
-}
-
-function isSliceMeasurementVisible(m, axis, timeIndex, volume, mprCenter, mprBasis) {
-  return (
-    m.axis === axis &&
-    m.timeIndex === timeIndex &&
-    measurementOnCurrentPlane(volume, m, mprCenter, mprBasis)
-  );
-}
-
-function MPRSlicePane({
-  axis,
-  volume,
-  timeIndex,
-  mprCenter,
-  mprBasis,
-  windowCenter,
-  windowWidth,
-  onCenterChange,
-  onBasisChange,
-  zoom,
-  onZoomChange,
-  viewEpoch,
-  tool,
-  measurements,
-  selectedMeasurementId,
-  onSelectMeasurement,
-  onAddMeasurement,
-  onUpdateMeasurement,
-  onLiveDraftChange,
-  onClearDraftSignal,
-  slabMm = 0,
-  slabMode = 'mean',
-  maximized = false,
-  hidden = false,
-  onToggleMaximize,
-  onOpenMenu,
-}) {
-  const canvasRef = useRef(null);
-  const overlayRef = useRef(null);
-  const containerRef = useRef(null);
-  const sliceRef = useRef(null);
-  const dragRef = useRef(null);
-  const clickStartRef = useRef(null);
-  const viewOriginRef = useRef(null);
-  const [paneSize, setPaneSize] = useState({ w: 512, h: 512 });
-  const [draft, setDraft] = useState(null);
-  const basisRef = useRef(mprBasis);
-  basisRef.current = mprBasis;
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-
-  useEffect(() => {
-    viewOriginRef.current = { ...mprCenter };
-  }, [viewEpoch, volume]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    setDraft(null);
-    onLiveDraftChange?.(null);
-  }, [tool, onClearDraftSignal]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    setDraft(null);
-    onLiveDraftChange?.(null);
-  }, [timeIndex]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const resolveViewOrigin = useCallback(() => {
-    const spec = viewSpec(axis);
-    if (!viewOriginRef.current) viewOriginRef.current = { ...mprCenter };
-    const origin = projectPointOntoPlane(
-      volume,
-      viewOriginRef.current,
-      mprCenter,
-      mprBasis[spec.normalKey]
-    );
-    viewOriginRef.current = origin;
-    return origin;
-  }, [axis, mprBasis, mprCenter, volume]);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return undefined;
-    const update = () => {
-      const r = el.getBoundingClientRect();
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      setPaneSize({
-        w: Math.max(64, Math.round(r.width * dpr)),
-        h: Math.max(64, Math.round(r.height * dpr)),
-      });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const drawOverlay = useCallback(
-    (slice) => {
-      const canvas = canvasRef.current;
-      const overlay = overlayRef.current;
-      const container = containerRef.current;
-      const s = slice || sliceRef.current;
-      if (!canvas || !overlay || !container || !s) return;
-
-      const { rect, dw, dh, ox, oy, sw, sh } = getViewLayout(container, canvas);
-      const dpr = window.devicePixelRatio || 1;
-      overlay.width = Math.round(rect.width * dpr);
-      overlay.height = Math.round(rect.height * dpr);
-      overlay.style.width = `${rect.width}px`;
-      overlay.style.height = `${rect.height}px`;
-
-      const ctx = overlay.getContext('2d');
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, rect.width, rect.height);
-
-      const toCss = (imgU, imgV) => {
-        const p = imageToCss(s, imgU, imgV, dw, dh);
-        return { x: ox + p.x, y: oy + p.y };
-      };
-
-      const cx = toCss(s.crossU ?? (sw - 1) / 2, s.crossV ?? (sh - 1) / 2).x;
-      const cy = toCss(s.crossU ?? (sw - 1) / 2, s.crossV ?? (sh - 1) / 2).y;
-      const half = Math.hypot(dw, dh);
-
-      drawTiltedLine(ctx, cx, cy, s.dirs.a.u, s.dirs.a.v, half, s.dirs.a.color);
-      drawTiltedLine(ctx, cx, cy, s.dirs.b.u, s.dirs.b.v, half, s.dirs.b.color);
-
-      if (tool === 'navigate') {
-        const drawHandle = (dir, color) => {
-          for (const h of lineHandlesCss(cx, cy, dir.u, dir.v, dw, dh)) {
-            ctx.fillStyle = color;
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(h.x, h.y, 7, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-          }
-        };
-        drawHandle(s.dirs.a, s.dirs.a.color);
-        drawHandle(s.dirs.b, s.dirs.b.color);
-      }
-
-      const drawPts = (points, cursor) => {
-        const all = cursor ? [...points, cursor] : points;
-        return all.map((mm) => {
-          const im = worldMmToImage(volume, s, mm);
-          return toCss(im.u, im.v);
-        });
-      };
-
-      const drawDistance = (points, cursor, live, extra = {}) => {
-        const pts = drawPts(points, cursor);
-        if (pts.length < 1) return;
-        const selected = extra.selected;
-        const color = extra.color || '#ffd54f';
-        ctx.strokeStyle = live ? '#7ee8ff' : color;
-        ctx.fillStyle = color;
-        ctx.lineWidth = selected ? 2.4 : 1.6;
-        ctx.setLineDash(live ? [5, 4] : []);
-        if (pts.length >= 2) {
-          ctx.beginPath();
-          ctx.moveTo(pts[0].x, pts[0].y);
-          ctx.lineTo(pts[1].x, pts[1].y);
-          ctx.stroke();
-        }
-        ctx.setLineDash([]);
-        pts.forEach((p) => {
-          ctx.fillStyle = color;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, selected ? 6 : 4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = selected ? '#fff' : '#111';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        });
-        const mmPts = cursor ? [...points, cursor] : points;
-        if (mmPts.length >= 2) {
-          const mid = {
-            x: (pts[0].x + pts[1].x) / 2,
-            y: (pts[0].y + pts[1].y) / 2,
-          };
-          const prefix = extra.label ? `${extra.label} · ` : '';
-          drawMeasureLabel(
-            ctx,
-            mid.x,
-            mid.y,
-            `${prefix}${formatDistance(distanceMm(mmPts[0], mmPts[1]))}`,
-            color
-          );
-        }
-      };
-
-      const drawArea = (points, cursor, live, extra = {}) => {
-        const mmPts = cursor ? [...points, cursor] : points;
-        const pts = drawPts(points, cursor);
-        if (!pts.length) return;
-        const selected = extra.selected;
-        const color = extra.color || '#ffd54f';
-        ctx.fillStyle = hexToRgba(color, live ? 0.14 : 0.22);
-        ctx.strokeStyle = live ? '#7ee8ff' : color;
-        ctx.lineWidth = selected ? 2.4 : 1.6;
-        ctx.setLineDash(live ? [5, 4] : []);
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        pts.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
-        if (!live && pts.length >= 3) ctx.closePath();
-        if (pts.length >= 3) ctx.fill();
-        ctx.stroke();
-        ctx.setLineDash([]);
-        pts.forEach((p) => {
-          ctx.fillStyle = color;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, selected ? 6 : 4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = selected ? '#fff' : '#111';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        });
-        if (mmPts.length >= 3) {
-          const cxp = pts.reduce((s2, p) => s2 + p.x, 0) / pts.length;
-          const cyp = pts.reduce((s2, p) => s2 + p.y, 0) / pts.length;
-          const prefix = extra.label ? `${extra.label} · ` : '';
-          drawMeasureLabel(
-            ctx,
-            cxp,
-            cyp,
-            `${prefix}${formatArea(polygonAreaMm2(mmPts, s.right, s.down))}`,
-            color
-          );
-        }
-      };
-
-      measurements
-        .filter((m) =>
-          isSliceMeasurementVisible(m, axis, timeIndex, volume, mprCenter, mprBasis)
-        )
-        .forEach((m) => {
-          const extra = {
-            label: m.label,
-            selected: m.id === selectedMeasurementId,
-            color: measureColor(m),
-          };
-          if (m.type === 'distance') drawDistance(m.points, null, false, extra);
-          else drawArea(m.points, null, false, extra);
-        });
-
-      if (draft && draft.axis === axis) {
-        if (draft.type === 'distance') drawDistance(draft.points, draft.cursor, true);
-        else drawArea(draft.points, draft.cursor, true);
-      }
-    },
-    [axis, draft, measurements, mprBasis, mprCenter, selectedMeasurementId, timeIndex, tool, volume]
-  );
-
-  const drawOverlayRef = useRef(drawOverlay);
-  drawOverlayRef.current = drawOverlay;
-
-  const redraw = useCallback(() => {
-    if (!volume || !canvasRef.current) return;
-    const slice = sampleObliquePlane(
-      volume,
-      timeIndex,
-      mprCenter,
-      mprBasis,
-      axis,
-      {
-        width: paneSize.w,
-        height: paneSize.h,
-        zoom,
-        viewOrigin: resolveViewOrigin(),
-        slabMm,
-        slabMode,
-      }
-    );
-    sliceRef.current = slice;
-    renderSliceToCanvas(canvasRef.current, slice, windowCenter, windowWidth);
-    drawOverlayRef.current(slice);
-  }, [
-    volume,
-    timeIndex,
-    mprCenter,
-    mprBasis,
-    axis,
-    windowCenter,
-    windowWidth,
-    paneSize.w,
-    paneSize.h,
-    zoom,
-    slabMm,
-    slabMode,
-    resolveViewOrigin,
-  ]);
-
-  useEffect(() => {
-    redraw();
-  }, [redraw]);
-
-  useEffect(() => {
-    drawOverlay(sliceRef.current);
-  }, [drawOverlay]);
-
-  useEffect(() => {
-    const onResize = () => drawOverlay(sliceRef.current);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [drawOverlay]);
-
-  useEffect(() => {
-    const el = overlayRef.current;
-    if (!el) return undefined;
-    const onWheelNative = (e) => {
-      e.preventDefault();
-      if (e.shiftKey) {
-        const delta = e.deltaY > 0 ? 1 : -1;
-        const spec = viewSpec(axis);
-        onCenterChange(
-          nudgeCenterAlongNormal(
-            volume,
-            mprCenter,
-            mprBasis,
-            spec.normalKey,
-            delta
-          )
-        );
-      } else {
-        const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        onZoomChange(Math.max(0.4, Math.min(6, zoom * factor)));
-      }
-    };
-    el.addEventListener('wheel', onWheelNative, { passive: false });
-    return () => el.removeEventListener('wheel', onWheelNative);
-  }, [axis, mprBasis, mprCenter, onCenterChange, onZoomChange, volume, zoom]);
-
-  const pointerCss = (clientX, clientY, { clamp = true } = {}) => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    const slice = sliceRef.current;
-    if (!canvas || !container || !slice) return null;
-    const { rect, dw, dh, ox, oy } = getViewLayout(container, canvas);
-    let x = clientX - rect.left - ox;
-    let y = clientY - rect.top - oy;
-    if (clamp) {
-      if (x < -8 || x > dw + 8 || y < -8 || y > dh + 8) return null;
-    }
-    const img = cssToImage(slice, x, y, dw, dh);
-    return {
-      x,
-      y,
-      dw,
-      dh,
-      imgU: img.imgU,
-      imgV: img.imgV,
-      cx: imageToCss(slice, slice.crossU, slice.crossV, dw, dh).x,
-      cy: imageToCss(slice, slice.crossU, slice.crossV, dw, dh).y,
-    };
-  };
-
-  const hitTestMode = (pos) => {
-    const slice = sliceRef.current;
-    if (!slice || !pos) return { mode: 'move' };
-    const { x, y, cx, cy, dw, dh } = pos;
-    const dist = Math.hypot(x - cx, y - cy);
-    const centerTol = 12;
-    const lineTol = 9;
-    const handleTol = 16;
-    const rotateMin = Math.max(52, Math.min(dw, dh) * 0.2);
-
-    const nearHandle = (dir) =>
-      lineHandlesCss(cx, cy, dir.u, dir.v, dw, dh).some(
-        (h) => Math.hypot(x - h.x, y - h.y) < handleTol
-      );
-
-    if (nearHandle(slice.dirs.a) || nearHandle(slice.dirs.b)) {
-      const dir = nearHandle(slice.dirs.a) ? slice.dirs.a : slice.dirs.b;
-      return { mode: 'tilt', planeKey: dir.planeKey, dir };
-    }
-    if (dist < centerTol) return { mode: 'move' };
-
-    const distToLine = (dir) => {
-      const len = Math.hypot(dir.u, dir.v) || 1;
-      const u = dir.u / len;
-      const v = dir.v / len;
-      return Math.abs((x - cx) * v - (y - cy) * u);
-    };
-    const dA = distToLine(slice.dirs.a);
-    const dB = distToLine(slice.dirs.b);
-    const nearA = dA < lineTol;
-    const nearB = dB < lineTol;
-    if (nearA || nearB) {
-      const useA = nearA && (!nearB || dA <= dB);
-      const dir = useA ? slice.dirs.a : slice.dirs.b;
-      if (dist > rotateMin) {
-        return { mode: 'tilt', planeKey: dir.planeKey, dir };
-      }
-      return { mode: 'moveLine', planeKey: dir.planeKey, dir };
-    }
-    return { mode: 'move' };
-  };
-
-  const visibleMeasurements = () =>
-    measurements.filter((m) =>
-      isSliceMeasurementVisible(m, axis, timeIndex, volume, mprCenter, mprBasis)
-    );
-
-  const mmToCssPos = (slice, mm, dw, dh) => {
-    const im = worldMmToImage(volume, slice, mm);
-    return imageToCss(slice, im.u, im.v, dw, dh);
-  };
-
-  const hitMeasurement = (pos) => {
-    const slice = sliceRef.current;
-    if (!slice || !pos || draftRef.current) return null;
-    const vis = visibleMeasurements();
-    let bestPt = null;
-    let bestPtD = 10;
-    vis.forEach((m) => {
-      m.points.forEach((mm, index) => {
-        const p = mmToCssPos(slice, mm, pos.dw, pos.dh);
-        const d = Math.hypot(pos.x - p.x, pos.y - p.y);
-        if (d < bestPtD) {
-          bestPtD = d;
-          bestPt = { mode: 'editPoint', id: m.id, index };
-        }
-      });
-    });
-    if (bestPt) return bestPt;
-
-    let bestBody = null;
-    let bestBodyD = 8;
-    vis.forEach((m) => {
-      const pts = m.points.map((mm) => mmToCssPos(slice, mm, pos.dw, pos.dh));
-      const segs =
-        m.type === 'area' && pts.length >= 3
-          ? pts.map((p, i) => [p, pts[(i + 1) % pts.length]])
-          : pts.length >= 2
-            ? [[pts[0], pts[1]]]
-            : [];
-      segs.forEach(([a, b]) => {
-        const d = distToSegment(pos.x, pos.y, a.x, a.y, b.x, b.y);
-        if (d < bestBodyD) {
-          bestBodyD = d;
-          bestBody = { mode: 'editMove', id: m.id };
-        }
-      });
-    });
-    return bestBody;
-  };
-
-  const finishArea = (points) => {
-    if (points.length >= 3) {
-      onAddMeasurement({
-        id: `${axis}-area-${Date.now()}`,
-        axis,
-        type: 'area',
-        points,
-      });
-    }
-    setDraft(null);
-  };
-
-  const onPointerDown = (e) => {
-    if (e.button !== 0) return;
-    const pos = pointerCss(e.clientX, e.clientY);
-    if (!pos) return;
-    const slice = sliceRef.current;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    clickStartRef.current = { x: e.clientX, y: e.clientY, consumed: false };
-
-    const editHit = hitMeasurement(pos);
-    if (editHit) {
-      clickStartRef.current.consumed = true;
-      onSelectMeasurement?.(editHit.id);
-      dragRef.current = {
-        ...editHit,
-        lastMm: imageToWorldMm(volume, slice, pos.imgU, pos.imgV),
-      };
-      e.currentTarget.style.cursor = 'grabbing';
-      return;
-    }
-
-    if (tool !== 'navigate') {
-      clickStartRef.current.consumed = true;
-      const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
-      if (tool === 'distance') {
-        if (!draft || draft.type !== 'distance') {
-          setDraft({ axis, type: 'distance', points: [mm], cursor: mm });
-          onLiveDraftChange?.({
-            axis,
-            type: 'distance',
-            points: [mm],
-            cursor: mm,
-          });
-        } else {
-          onAddMeasurement({
-            id: `${axis}-dist-${Date.now()}`,
-            axis,
-            type: 'distance',
-            points: [draft.points[0], mm],
-          });
-          setDraft(null);
-          onLiveDraftChange?.({
-            axis,
-            type: 'distance',
-            points: [],
-            cursor: mm,
-          });
-        }
-        return;
-      }
-      if (tool === 'area') {
-        if (!draft || draft.type !== 'area') {
-          setDraft({ axis, type: 'area', points: [mm], cursor: mm });
-          onLiveDraftChange?.({
-            axis,
-            type: 'area',
-            points: [mm],
-            cursor: mm,
-          });
-        } else {
-          const first = draft.points[0];
-          const close =
-            draft.points.length >= 3 && distanceMm(first, mm) < (slice.pixelMm || 1) * 14;
-          if (close) {
-            finishArea(draft.points);
-            onLiveDraftChange?.({
-              axis,
-              type: 'area',
-              points: [],
-              cursor: mm,
-            });
-          } else {
-            const points = [...draft.points, mm];
-            setDraft({ ...draft, points, cursor: mm });
-            onLiveDraftChange?.({
-              axis,
-              type: 'area',
-              points,
-              cursor: mm,
-            });
-          }
-        }
-      }
-      return;
-    }
-
-    const hit = hitTestMode(pos);
-    const atCenter = Math.hypot(pos.x - pos.cx, pos.y - pos.cy) < 12;
-    if (hit.mode === 'tilt' || hit.mode === 'moveLine' || atCenter) {
-      clickStartRef.current.consumed = true;
-      dragRef.current = {
-        ...hit,
-        lastU: pos.imgU,
-        lastV: pos.imgV,
-        angle0: Math.atan2(pos.y - pos.cy, pos.x - pos.cx),
-        basis0: basisRef.current,
-      };
-      e.currentTarget.style.cursor =
-        hit.mode === 'tilt' ? 'grabbing' : hit.mode === 'moveLine' ? 'move' : 'move';
-    }
-  };
-
-  const onPointerMove = (e) => {
-    const start = clickStartRef.current;
-    if (start && !start.consumed) {
-      const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y);
-      if (moved > 6) start.consumed = true;
-    }
-    const pos = pointerCss(e.clientX, e.clientY, { clamp: !dragRef.current });
-    if (!pos) return;
-    const slice = sliceRef.current;
-    const drag = dragRef.current;
-
-    if (
-      start?.consumed &&
-      tool === 'navigate' &&
-      !drag &&
-      !hitMeasurement(pos)
-    ) {
-      dragRef.current = {
-        mode: 'move',
-        lastU: pos.imgU,
-        lastV: pos.imgV,
-        angle0: Math.atan2(pos.y - pos.cy, pos.x - pos.cx),
-        basis0: basisRef.current,
-      };
-      e.currentTarget.style.cursor = 'move';
-      return;
-    }
-
-    if (drag?.mode === 'editPoint' || drag?.mode === 'editMove') {
-      const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
-      if (drag.mode === 'editPoint') {
-        onUpdateMeasurement?.(drag.id, (m) => {
-          const points = m.points.slice();
-          points[drag.index] = mm;
-          return { ...m, points };
-        });
-      } else {
-        const delta = subVec(mm, drag.lastMm);
-        drag.lastMm = mm;
-        onUpdateMeasurement?.(drag.id, (m) => ({
-          ...m,
-          points: m.points.map((p) => addVec(p, delta)),
-        }));
-      }
-      e.currentTarget.style.cursor = 'grabbing';
-      return;
-    }
-
-    if (tool !== 'navigate') {
-      const hover = hitMeasurement(pos);
-      e.currentTarget.style.cursor = hover ? 'grab' : 'crosshair';
-      const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
-      if (draftRef.current && draftRef.current.axis === axis) {
-        setDraft((d) => (d ? { ...d, cursor: mm } : d));
-      }
-      onLiveDraftChange?.({
-        axis,
-        type: (draftRef.current && draftRef.current.type) || tool,
-        points: draftRef.current?.points || [],
-        cursor: mm,
-      });
-      return;
-    }
-
-    if (!drag) {
-      const hover = hitMeasurement(pos);
-      if (hover) {
-        e.currentTarget.style.cursor = 'grab';
-        return;
-      }
-      const hit = hitTestMode(pos);
-      e.currentTarget.style.cursor =
-        hit.mode === 'tilt' ? 'grab' : hit.mode === 'moveLine' ? 'move' : 'crosshair';
-      return;
-    }
-
-    if (drag.mode === 'tilt') {
-      const angle = Math.atan2(pos.y - pos.cy, pos.x - pos.cx);
-      let delta = angle - drag.angle0;
-      if (delta > Math.PI) delta -= 2 * Math.PI;
-      if (delta < -Math.PI) delta += 2 * Math.PI;
-      const spec = viewSpec(axis);
-      const next = rotateBasisInPlane(drag.basis0, spec.normalKey, delta);
-      basisRef.current = next;
-      onBasisChange(next);
-      return;
-    }
-
-    const dU = pos.imgU - drag.lastU;
-    const dV = pos.imgV - drag.lastV;
-    drag.lastU = pos.imgU;
-    drag.lastV = pos.imgV;
-    if (drag.mode === 'moveLine' && drag.dir && drag.planeKey) {
-      onCenterChange(
-        movePlaneByLineDrag(
-          volume,
-          mprCenter,
-          mprBasis,
-          axis,
-          drag.planeKey,
-          drag.dir.u,
-          drag.dir.v,
-          dU,
-          dV,
-          slice?.stepX,
-          slice?.stepY
-        )
-      );
-    } else {
-      onCenterChange(
-        translateCenterInPlane(
-          volume,
-          mprCenter,
-          mprBasis,
-          axis,
-          dU,
-          dV,
-          slice?.stepX,
-          slice?.stepY
-        )
-      );
-    }
-  };
-
-  const onPointerUp = (e) => {
-    const start = clickStartRef.current;
-    clickStartRef.current = null;
-    dragRef.current = null;
-    e.currentTarget.style.cursor = 'crosshair';
-    if (e.button !== 0 || !start || start.consumed) return;
-    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6) return;
-    onOpenMenu?.({ x: e.clientX, y: e.clientY, pane: axis });
-  };
-
-  const onContextMenu = (e) => {
-    e.preventDefault();
-    onOpenMenu?.({ x: e.clientX, y: e.clientY, pane: axis });
-  };
-
-  const onDoubleClick = (e) => {
-    if (tool === 'area' && draft && draft.axis === axis) {
-      e.preventDefault();
-      finishArea(draft.points);
-    }
-  };
-
-  useEffect(() => {
-    const onKey = (ev) => {
-      if (ev.key === 'Escape') setDraft(null);
-      if (ev.key === 'Enter' && draftRef.current?.type === 'area') {
-        finishArea(draftRef.current.points);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [axis]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const planeColor = AXIS_META[axis].color;
-  const hint =
-    tool === 'distance'
-      ? 'Click two points to measure length · Drag points to edit'
-      : tool === 'area'
-        ? 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel'
-        : 'Left-click empty space for the menu · Drag a line near the ends to rotate · Drag the middle to move it · Wheel zoom · Shift+wheel scroll';
-
-  return (
-    <Pane
-      ref={containerRef}
-      $borderColor={planeColor}
-      $maximized={maximized}
-      $hidden={hidden}
-    >
-      <PaneLabel $color={planeColor}>{AXIS_META[axis].label}</PaneLabel>
-      <PaneTools>
-        <IconBtn
-          type="button"
-          title={maximized ? 'Restore 2×2' : 'Maximize this view'}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleMaximize?.();
-          }}
-        >
-          {maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </IconBtn>
-      </PaneTools>
-      <ZoomBadge>
-        {Math.round(zoom * 100)}%
-        {slabMm >= 1 ? ` · ${slabMm} mm${slabMode === 'mip' ? ' MIP' : ''}` : ''}
-      </ZoomBadge>
-      <SliceCanvas ref={canvasRef} />
-      <canvas
-        ref={overlayRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerLeave={() => onLiveDraftChange?.(null)}
-        onDoubleClick={onDoubleClick}
-        onContextMenu={onContextMenu}
-        title={hint}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 1,
-          cursor: 'crosshair',
-        }}
-      />
-    </Pane>
-  );
-}
-
-function EcgStrip({ ecg, timeIndex, frameCount, onSeek }) {
-  const canvasRef = useRef(null);
-  const wrapRef = useRef(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const wrap = wrapRef.current;
-    if (!canvas || !wrap || !ecg?.samples?.length) return undefined;
-
-    const draw = () => {
-      const rect = wrap.getBoundingClientRect();
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const w = Math.max(8, Math.round(rect.width));
-      const h = Math.max(8, Math.round(rect.height));
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      const ctx = canvas.getContext('2d');
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = '#080c10';
-      ctx.fillRect(0, 0, w, h);
-
-      const samples = ecg.samples;
-      let min = Infinity;
-      let max = -Infinity;
-      for (let i = 0; i < samples.length; i++) {
-        const v = samples[i];
-        if (v < min) min = v;
-        if (v > max) max = v;
-      }
-      const span = max - min || 1;
-      const padY = 10;
-      const padX = 8;
-      const usableW = w - padX * 2;
-      const usableH = h - padY * 2;
-
-      ctx.strokeStyle = '#1c2a32';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, h / 2);
-      ctx.lineTo(w, h / 2);
-      ctx.stroke();
-
-      const xAt = (i) => padX + (i / Math.max(1, samples.length - 1)) * usableW;
-      const yAt = (v) => padY + (1 - (v - min) / span) * usableH;
-
-      ctx.beginPath();
-      for (let i = 0; i < samples.length; i++) {
-        const x = xAt(i);
-        const y = yAt(samples[i]);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      const lastX = xAt(samples.length - 1);
-      ctx.lineTo(lastX, h - 2);
-      ctx.lineTo(xAt(0), h - 2);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(61, 154, 139, 0.22)';
-      ctx.fill();
-
-      ctx.strokeStyle = '#6ee0cc';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      for (let i = 0; i < samples.length; i++) {
-        const x = xAt(i);
-        const y = yAt(samples[i]);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      if (ecg.beats?.length) {
-        ctx.fillStyle = '#e07a5f';
-        ecg.beats.forEach((b) => {
-          const x = xAt(b);
-          ctx.beginPath();
-          ctx.moveTo(x, 3);
-          ctx.lineTo(x - 4, 11);
-          ctx.lineTo(x + 4, 11);
-          ctx.closePath();
-          ctx.fill();
-        });
-      }
-
-      const si = frameToSampleIndex(ecg, timeIndex, frameCount);
-      const px = xAt(si);
-      ctx.strokeStyle = '#ffe082';
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-      ctx.moveTo(px, 0);
-      ctx.lineTo(px, h);
-      ctx.stroke();
-    };
-
-    draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(wrap);
-    return () => ro.disconnect();
-  }, [ecg, timeIndex, frameCount]);
-
-  const seekFromEvent = (e) => {
-    if (!ecg?.samples?.length) return;
-    const rect = wrapRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const si = Math.round(x * (ecg.samples.length - 1));
-    onSeek(sampleIndexToFrame(ecg, si, frameCount));
-  };
-
-  const onPointerDown = (e) => {
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    seekFromEvent(e);
-  };
-
-  const bpm =
-    ecg?.heartRateBpm && Number.isFinite(ecg.heartRateBpm)
-      ? Math.round(ecg.heartRateBpm)
-      : null;
-  const title = `${ecg?.label || 'ECG'}${bpm ? ` · ${bpm} bpm` : ''}`;
-
-  const samp = ecg?.samples;
-  let sMin = 0;
-  let sMax = 0;
-  if (samp?.length) {
-    sMin = samp[0];
-    sMax = samp[0];
-    for (let i = 1; i < samp.length; i++) {
-      if (samp[i] < sMin) sMin = samp[i];
-      if (samp[i] > sMax) sMax = samp[i];
-    }
-  }
-
-  return (
-    <EcgBar
-      ref={wrapRef}
-      title="Click to jump to a frame"
-      data-ecg-source={ecg?.source || ''}
-      data-ecg-beats={(ecg?.beats || []).join(',')}
-      data-ecg-bpm={bpm || ''}
-      data-ecg-n={samp?.length || 0}
-      data-ecg-range={`${sMin.toFixed(3)}:${sMax.toFixed(3)}`}
-    >
-      <EcgLegend>{title}</EcgLegend>
-      <EcgCanvas
-        ref={canvasRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={(e) => e.buttons === 1 && seekFromEvent(e)}
-      />
-    </EcgBar>
-  );
-}
+  Container,
+  ControlSidebar,
+  Empty,
+  Grid,
+  Meta,
+  Viewport,
+} from './mpr/styles';
+
+const SLICE_AXES = ['axial', 'coronal', 'sagittal'];
 
 const MPRViewer = () => {
   const {
     volume,
-    currentImage,
     timeIndex,
     setTimeIndex,
     crosshair,
@@ -1619,249 +47,66 @@ const MPRViewer = () => {
     setWindowLevel,
   } = useEcho();
 
-  const [playing, setPlaying] = useState(false);
-  const [cineRate, setCineRate] = useState(1);
-  const [opacity, setOpacity] = useState(0.72);
-  const [renderMode, setRenderMode] = useState('dvr');
-  const [colorStyle, setColorStyle] = useState('glass');
-  const [useCutPlanes, setUseCutPlanes] = useState(false);
-  const [cropPlaneKey, setCropPlaneKey] = useState('z');
-  const [cropFlip, setCropFlip] = useState(false);
-  const [showMprLines, setShowMprLines] = useState(true);
-  const [lightAzimuth, setLightAzimuth] = useState(38);
-  const [lightElevation, setLightElevation] = useState(42);
-  const [lightIntensity, setLightIntensity] = useState(1.55);
-  const [zoom, setZoom] = useState(1.5);
-  const [slabMm, setSlabMm] = useState(0);
-  const [slabMode, setSlabMode] = useState('mean');
-  const [viewEpoch, setViewEpoch] = useState(0);
-  const [tool, setTool] = useState('navigate');
-  const [measurements, setMeasurements] = useState([]);
-  const [selectedMeasurementId, setSelectedMeasurementId] = useState(null);
-  const [liveDraft, setLiveDraft] = useState(null);
-  const [clearDraftSignal, setClearDraftSignal] = useState(0);
-  const [maximizedPane, setMaximizedPane] = useState(null);
-  const [cameraResetToken, setCameraResetToken] = useState(0);
-  const [exporting, setExporting] = useState(null);
-  const [openSections, setOpenSections] = useState(DEFAULT_SECTIONS);
-  const [viewMenu, setViewMenu] = useState(null);
-  const timeRef = useRef(timeIndex);
-  const labelCounters = useRef({ d: 0, a: 0 });
   const viewportRef = useRef(null);
-  const maximizedRef = useRef(null);
-  const volClickRef = useRef(null);
+  const [settings, actions] = useViewerSettings(volume);
+  const { tool, zoom, maximizedPane, viewMenu, openSections } = settings;
 
-  useEffect(() => {
-    setMeasurements([]);
-    setSelectedMeasurementId(null);
-    setLiveDraft(null);
-    setTool('navigate');
-    setClearDraftSignal((n) => n + 1);
-    labelCounters.current = { d: 0, a: 0 };
-    setPlaying(false);
-    setCineRate(1);
-    setMaximizedPane(null);
-    setExporting(null);
-  }, [volume]);
-  timeRef.current = timeIndex;
-  maximizedRef.current = maximizedPane;
-  const playingRef = useRef(playing);
-  playingRef.current = playing;
+  const measure = useMeasurements({ volume, timeIndex, mprCenter, mprBasis });
 
-  useEffect(() => {
-    if (!playing || exporting || !volume || volume.dims.t <= 1) return undefined;
-    const ms = Math.max(16, (volume.frameTimeMs || 50) / cineRate);
-    const id = setInterval(() => {
-      setTimeIndex((timeRef.current + 1) % volume.dims.t);
-    }, ms);
-    return () => clearInterval(id);
-  }, [playing, cineRate, volume, setTimeIndex, exporting]);
+  // useExports needs setPlaying and useCine needs `exporting`; route the
+  // setter through a ref so the two hooks can reference each other.
+  const setPlayingRef = useRef(() => {});
+  const exports = useExports({
+    volume,
+    timeIndex,
+    setTimeIndex,
+    viewportRef,
+    setPlaying: (p) => setPlayingRef.current(p),
+    maximizedPane,
+    setMaximizedPane: (pane) => actions.set({ maximizedPane: pane }),
+  });
+  const { exporting } = exports;
 
-  useEffect(() => {
-    const isTypingTarget = (el) => {
-      if (!el || el === document.body) return false;
-      const tag = el.tagName;
-      if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
-      if (tag === 'INPUT' && el.type !== 'range') return true;
-      return el.isContentEditable;
-    };
+  const cine = useCine({
+    volume,
+    timeIndex,
+    setTimeIndex,
+    exporting,
+    onEscape: () => actions.set({ maximizedPane: null, viewMenu: null }),
+  });
+  setPlayingRef.current = cine.setPlaying;
 
-    const onKey = (ev) => {
-      if (isTypingTarget(ev.target)) return;
-      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
-
-      if (ev.key === 'Escape') {
-        setMaximizedPane(null);
-        setViewMenu(null);
-        return;
-      }
-
-      if (!volume || volume.dims.t <= 1) return;
-
-      if (ev.code === 'Space' || ev.key === ' ') {
-        ev.preventDefault();
-        if (ev.repeat || exporting) return;
-        setPlaying((p) => !p);
-        return;
-      }
-
-      if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
-      ev.preventDefault();
-      const dir = ev.key === 'ArrowRight' ? 1 : -1;
-      const n = volume.dims.t;
-
-      if (playingRef.current) {
-        if (ev.repeat) return;
-        setCineRate((r) => {
-          const idx = CINE_RATES.indexOf(r);
-          const i = idx < 0 ? CINE_RATES.length - 1 : idx;
-          return CINE_RATES[Math.max(0, Math.min(CINE_RATES.length - 1, i + dir))];
-        });
-        return;
-      }
-
-      setTimeIndex((timeRef.current + dir + n) % n);
-    };
-
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [volume, setTimeIndex, exporting]);
-
-  const addMeasurement = (partial) => {
-    const isDist = partial.type === 'distance';
-    const n = isDist ? ++labelCounters.current.d : ++labelCounters.current.a;
-    const snap = snapshotMeasurementPlane(volume, partial.axis, mprCenter, mprBasis);
-    const next = {
-      ...partial,
-      ...snap,
-      label: isDist ? `D${n}` : `A${n}`,
-      timeIndex,
-      color: pickMeasureColor(measurements),
-    };
-    setMeasurements((prev) => [...prev, { ...next, color: pickMeasureColor(prev) }]);
-    setSelectedMeasurementId(next.id);
+  const seek = (t) => {
+    cine.setPlaying(false);
+    setTimeIndex(t);
   };
 
-  const updateMeasurement = (id, updater) => {
-    setMeasurements((prev) => prev.map((m) => (m.id === id ? updater(m) : m)));
-  };
-
-  const deleteMeasurement = (id) => {
-    setMeasurements((prev) => prev.filter((m) => m.id !== id));
-    setSelectedMeasurementId((cur) => (cur === id ? null : cur));
+  const resetTilt = () => {
+    resetMprOrientation();
+    actions.bump('viewEpoch');
   };
 
   const restoreMeasurement = (m) => {
-    setSelectedMeasurementId(m.id);
-    setTimeIndex(m.timeIndex);
-    setPlaying(false);
+    measure.setSelectedId(m.id);
+    seek(m.timeIndex);
     if (m.center) setMprCenter(m.center);
     if (m.basis) setMprBasis(m.basis);
-    setViewEpoch((n) => n + 1);
-  };
-
-  const exportFrame = () => {
-    if (!currentImage?.volume) return;
-    try {
-      const nrrd = exportToNRRD(currentImage, timeIndex);
-      const blob = new Blob([nrrd], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `echo_t${timeIndex}.nrrd`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const exportPng = async () => {
-    const el = viewportRef.current;
-    if (!el || exporting) return;
-    setExporting('png');
-    try {
-      await waitPaint();
-      const canvas = captureElementToCanvas(el, { dpr: 2, even: false });
-      const blob = await canvasToBlob(canvas, 'image/png');
-      downloadBlob(blob, 'echo_mpr.png');
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setExporting(null);
-    }
-  };
-
-  const exportAvi = async () => {
-    const el = viewportRef.current;
-    if (!el || !volume || exporting) return;
-    const n = volume.dims.t;
-    if (n <= 1) return;
-    setPlaying(false);
-    const prevMax = maximizedRef.current;
-    setMaximizedPane(null);
-    const startT = timeIndex;
-    setExporting({ kind: 'avi', i: 0, n });
-    try {
-      await waitMs(90);
-      await waitPaint();
-      const frames = [];
-      let width = 0;
-      let height = 0;
-      for (let t = 0; t < n; t++) {
-        setExporting({ kind: 'avi', i: t + 1, n });
-        flushSync(() => setTimeIndex(t));
-        await waitPaint();
-        await waitMs(45);
-        const canvas = captureElementToCanvas(el, { dpr: 1.25, even: true });
-        width = canvas.width;
-        height = canvas.height;
-        frames.push(await canvasToJpegBytes(canvas, 0.82));
-      }
-      const fps = Math.max(
-        8,
-        Math.min(30, Math.round(1000 / (volume.frameTimeMs || 50)))
-      );
-      const avi = encodeMjpegAvi(frames, { width, height, fps });
-      downloadBlob(
-        new Blob([avi], { type: 'video/x-msvideo' }),
-        `echo_clip_${n}f.avi`
-      );
-    } catch (err) {
-      console.error(err);
-    } finally {
-      flushSync(() => setTimeIndex(startT));
-      setMaximizedPane(prevMax);
-      setExporting(null);
-    }
-  };
-
-  const toggleSection = (id) => {
-    setOpenSections((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  const openViewMenu = (menu) => {
-    setViewMenu(menu);
+    actions.bump('viewEpoch');
   };
 
   const runViewMenu = (action) => {
     const pane = viewMenu?.pane;
-    setViewMenu(null);
-    if (action === 'nav') setTool('navigate');
-    if (action === 'length') setTool('distance');
-    if (action === 'area') setTool('area');
-    if (action === 'max' && pane) {
-      setMaximizedPane((p) => (p === pane ? null : pane));
-    }
-    if (action === 'fit') setZoom(1.35);
-    if (action === 'resetTilt') {
-      resetMprOrientation();
-      setViewEpoch((n) => n + 1);
-    }
-    if (action === 'reset3d') setCameraResetToken((n) => n + 1);
-    if (action === 'mprLines') setShowMprLines((v) => !v);
-    if (action === 'cuts') setUseCutPlanes((v) => !v);
-    if (action === 'png') exportPng();
+    actions.set({ viewMenu: null });
+    if (action === 'nav') actions.set({ tool: 'navigate' });
+    if (action === 'length') actions.set({ tool: 'distance' });
+    if (action === 'area') actions.set({ tool: 'area' });
+    if (action === 'max' && pane) actions.toggleMaximized(pane);
+    if (action === 'fit') actions.set({ zoom: FIT_ZOOM });
+    if (action === 'resetTilt') resetTilt();
+    if (action === 'reset3d') actions.bump('cameraResetToken');
+    if (action === 'mprLines') actions.toggle('showMprLines');
+    if (action === 'cuts') actions.toggle('useCutPlanes');
+    if (action === 'png') exports.exportPng();
   };
 
   if (!volume) {
@@ -1878,448 +123,96 @@ const MPRViewer = () => {
   const sizeMm = physicalSizeMm(volume);
   const meta = volume.meta || {};
   const ecg = getVolumeEcg(volume);
+  const openMenu = (menu) => actions.set({ viewMenu: menu });
+  const setZoom = (z) => actions.set({ zoom: z });
+
+  const section = (id, title, content) => (
+    <SidebarSection
+      title={title}
+      open={openSections[id]}
+      onToggle={() => actions.toggleSection(id)}
+    >
+      {content}
+    </SidebarSection>
+  );
 
   return (
     <Container>
       <ControlSidebar>
-        <SidebarSection
-          title="Cine"
-          open={openSections.cine}
-          onToggle={() => toggleSection('cine')}
-        >
-          <Button
-            $grow
-            onClick={() => setPlaying((p) => !p)}
-            disabled={volume.dims.t <= 1 || Boolean(exporting)}
-            title="Play/pause (Space). Paused: ← → step frame. Playing: ← slower, → faster up to 1×"
-          >
-            {playing ? <Pause size={16} /> : <Play size={16} />}
-            Cine {cineRate === 1 ? '1×' : `${cineRate}×`}
-          </Button>
-          <SliderRow>
-            <Label $wide="4.2rem">
-              T {timeIndex + 1}/{volume.dims.t}
-            </Label>
-            <Slider
-              type="range"
-              min={0}
-              max={Math.max(0, volume.dims.t - 1)}
-              value={timeIndex}
-              onChange={(e) => {
-                setPlaying(false);
-                setTimeIndex(Number(e.target.value));
-              }}
-            />
-          </SliderRow>
-          {ecg ? (
-            <MeasureMetaLine>
-              {ecg.label || 'ECG'}
-              {ecg.heartRateBpm ? ` · ${Math.round(ecg.heartRateBpm)} bpm` : ''}
-            </MeasureMetaLine>
-          ) : null}
-          <MeasureMetaLine>
-            Space play/pause · ← → {playing ? 'speed' : 'frame'}
-          </MeasureMetaLine>
-        </SidebarSection>
-
-        <SidebarSection
-          title="Planes"
-          open={openSections.planes}
-          onToggle={() => toggleSection('planes')}
-        >
-          <SliderRow>
-            <Label style={{ color: AXIS_META.sagittal.color }}>X {crosshair.x}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.x - 1}
-              value={crosshair.x}
-              onChange={(e) => setCrosshair({ x: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.sagittal.color }}
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label style={{ color: AXIS_META.coronal.color }}>Y {crosshair.y}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.y - 1}
-              value={crosshair.y}
-              onChange={(e) => setCrosshair({ y: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.coronal.color }}
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label style={{ color: AXIS_META.axial.color }}>Z {crosshair.z}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.z - 1}
-              value={crosshair.z}
-              onChange={(e) => setCrosshair({ z: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.axial.color }}
-            />
-          </SliderRow>
-          <Button
-            $grow
-            onClick={() => {
-              resetMprOrientation();
-              setViewEpoch((n) => n + 1);
-            }}
-            title="Reset plane tilt to orthogonal"
-          >
-            Reset tilt
-          </Button>
-          <SliderRow>
-            <Label $wide="4.8rem">
-              {slabMm < 1 ? 'Thin' : `${slabMm} mm`}
-            </Label>
-            <Slider
-              type="range"
-              min={0}
-              max={8}
-              step={1}
-              value={slabMm}
-              onChange={(e) => setSlabMm(Number(e.target.value))}
-              title="Slice thickness (0 = single plane)"
-            />
-          </SliderRow>
-          <ButtonRow>
-            <Button
-              $grow
-              $active={slabMode === 'mean'}
-              onClick={() => setSlabMode('mean')}
-              disabled={slabMm < 1}
-              title="Average through the slab"
-            >
-              Mean
-            </Button>
-            <Button
-              $grow
-              $active={slabMode === 'mip'}
-              onClick={() => setSlabMode('mip')}
-              disabled={slabMm < 1}
-              title="Maximum intensity through the slab"
-            >
-              MIP
-            </Button>
-          </ButtonRow>
-        </SidebarSection>
-
-        <SidebarSection
-          title="Tools"
-          open={openSections.tools}
-          onToggle={() => toggleSection('tools')}
-        >
-          <ButtonRow>
-            <Button
-              $grow
-              $active={tool === 'navigate'}
-              onClick={() => setTool('navigate')}
-              title="Move and rotate MPR lines"
-            >
-              Nav
-            </Button>
-            <Button
-              $grow
-              $active={tool === 'distance'}
-              onClick={() => setTool('distance')}
-              title="Measure distance on a 2D slice"
-            >
-              Length
-            </Button>
-            <Button
-              $grow
-              $active={tool === 'area'}
-              onClick={() => setTool('area')}
-              title="Measure area on a 2D slice"
-            >
-              Area
-            </Button>
-            <Button
-              $grow
-              onClick={() => {
-                setMeasurements([]);
-                setSelectedMeasurementId(null);
-                setClearDraftSignal((n) => n + 1);
-                labelCounters.current = { d: 0, a: 0 };
-              }}
-              disabled={measurements.length === 0}
-              title="Clear all measurements"
-            >
-              Clear
-            </Button>
-          </ButtonRow>
-        </SidebarSection>
-
-        <SidebarSection
-          title="Measurements"
-          open={openSections.measure}
-          onToggle={() => toggleSection('measure')}
-        >
-          {measurements.length === 0 ? (
-            <MeasureMetaLine>None yet · Length or Area on a 2D view</MeasureMetaLine>
-          ) : (
-            <MeasureList>
-              {measurements.map((m) => {
-                const visible2d = isSliceMeasurementVisible(
-                  m,
-                  m.axis,
-                  timeIndex,
-                  volume,
-                  mprCenter,
-                  mprBasis
-                );
-                const visible3d = m.timeIndex === timeIndex;
-                return (
-                  <MeasureRow
-                    key={m.id}
-                    $active={m.id === selectedMeasurementId}
-                    $visible={visible2d || visible3d}
-                    $color={measureColor(m)}
-                    onClick={() => restoreMeasurement(m)}
-                    title="Jump to this measurement"
-                  >
-                    <MeasureLabel $color={measureColor(m)}>{m.label}</MeasureLabel>
-                    <MeasureValue>
-                      {measurementCaption(m)}
-                      <MeasureMetaLine>
-                        T{m.timeIndex + 1} · {AXIS_META[m.axis]?.short || m.axis}
-                      </MeasureMetaLine>
-                    </MeasureValue>
-                    <MeasureDelete
-                      role="button"
-                      title={`Delete ${m.label}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteMeasurement(m.id);
-                      }}
-                    >
-                      <Trash2 size={13} />
-                    </MeasureDelete>
-                  </MeasureRow>
-                );
-              })}
-            </MeasureList>
-          )}
-        </SidebarSection>
-
-        <SidebarSection
-          title="Image"
-          open={openSections.image}
-          onToggle={() => toggleSection('image')}
-        >
-          <SliderRow>
-            <Label $wide="3.6rem">WC {windowCenter}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={255}
-              value={windowCenter}
-              onChange={(e) =>
-                setWindowLevel({ windowCenter: Number(e.target.value) })
-              }
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label $wide="3.6rem">WW {windowWidth}</Label>
-            <Slider
-              type="range"
-              min={1}
-              max={255}
-              value={windowWidth}
-              onChange={(e) =>
-                setWindowLevel({ windowWidth: Number(e.target.value) })
-              }
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label $wide="4.5rem">Zoom {Math.round(zoom * 100)}%</Label>
-            <Slider
-              type="range"
-              min={0.4}
-              max={4}
-              step={0.05}
-              value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
-              title="MPR zoom"
-            />
-          </SliderRow>
-          <Button $grow onClick={() => setZoom(1.35)} title="Fit default zoom">
-            Fit
-          </Button>
-        </SidebarSection>
-
-        <SidebarSection
-          title="Volume"
-          open={openSections.volume}
-          onToggle={() => toggleSection('volume')}
-        >
-          <Select
-            value={colorStyle}
-            onChange={(e) => {
-              const next = e.target.value;
-              setColorStyle(next);
-              if (next === 'philips' || next === 'glass') setRenderMode('dvr');
-              if (next === 'glass') setOpacity(0.72);
-              if (next === 'philips') setOpacity(0.92);
-              if (next === 'gray') setOpacity(0.8);
-            }}
-            title="Volume color style"
-          >
-            <option value="philips">Philips</option>
-            <option value="glass">Glass</option>
-            <option value="gray">Gray</option>
-          </Select>
-          <ButtonRow>
-            <Button
-              $grow
-              $active={renderMode === 'dvr'}
-              onClick={() => setRenderMode('dvr')}
-              title="Shaded volume rendering"
-            >
-              DVR
-            </Button>
-            <Button
-              $grow
-              $active={renderMode === 'mip'}
-              onClick={() => setRenderMode('mip')}
-              title="Maximum intensity projection"
-            >
-              MIP
-            </Button>
-          </ButtonRow>
-          <SliderRow>
-            <Label $wide="4.2rem">Opacity</Label>
-            <Slider
-              type="range"
-              min={0.15}
-              max={1}
-              step={0.05}
-              value={opacity}
-              onChange={(e) => setOpacity(Number(e.target.value))}
-            />
-          </SliderRow>
-          <ButtonRow>
-            <Button
-              $grow
-              $active={useCutPlanes}
-              onClick={() => setUseCutPlanes((v) => !v)}
-              title="Crop the 3D volume with an MPR plane"
-            >
-              {useCutPlanes ? 'Cuts on' : 'Cuts off'}
-            </Button>
-            <Button
-              $grow
-              $active={showMprLines}
-              onClick={() => setShowMprLines((v) => !v)}
-              title="Show MPR planes on the 3D volume"
-            >
-              {showMprLines ? 'MPR lines on' : 'MPR lines off'}
-            </Button>
-          </ButtonRow>
-          <ButtonRow>
-            {CROP_PLANES.map((p) => (
-              <Button
-                key={p.key}
-                $grow
-                $active={cropPlaneKey === p.key}
-                onClick={() => {
-                  setCropPlaneKey(p.key);
-                  setUseCutPlanes(true);
-                }}
-                title={`Crop with the ${p.name.toLowerCase()} ${AXIS_META[p.axis].label} plane`}
-                style={{ color: AXIS_META[p.axis].color }}
-              >
-                {p.name}
-              </Button>
-            ))}
-          </ButtonRow>
-          <Button
-            $grow
-            onClick={() => setCropFlip((v) => !v)}
-            disabled={!useCutPlanes}
-            title="Keep the other side of the crop plane"
-          >
-            <FlipHorizontal size={14} />
-            Flip side
-          </Button>
-          <Button
-            $grow
-            onClick={() => setCameraResetToken((n) => n + 1)}
-            title="Reset 3D camera"
-          >
-            <RotateCcw size={14} />
-            Reset 3D
-          </Button>
-          <SliderRow>
-            <Label>az</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={360}
-              value={lightAzimuth}
-              onChange={(e) => setLightAzimuth(Number(e.target.value))}
-              title="Light azimuth"
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label>el</Label>
-            <Slider
-              type="range"
-              min={-80}
-              max={80}
-              value={lightElevation}
-              onChange={(e) => setLightElevation(Number(e.target.value))}
-              title="Light elevation"
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label>int</Label>
-            <Slider
-              type="range"
-              min={0.2}
-              max={2}
-              step={0.05}
-              value={lightIntensity}
-              onChange={(e) => setLightIntensity(Number(e.target.value))}
-              title="Light intensity"
-            />
-          </SliderRow>
-        </SidebarSection>
-
-        <SidebarSection
-          title="Export"
-          open={openSections.export}
-          onToggle={() => toggleSection('export')}
-        >
-          <ButtonRow>
-            <Button
-              $grow
-              onClick={exportPng}
-              disabled={Boolean(exporting)}
-              title="Screenshot of the current views (PNG)"
-            >
-              <Camera size={14} />
-              PNG
-            </Button>
-            <Button
-              $grow
-              onClick={exportAvi}
-              disabled={Boolean(exporting) || volume.dims.t <= 1}
-              title="Cine clip as Motion-JPEG AVI"
-            >
-              <Film size={14} />
-              {exporting?.kind === 'avi'
-                ? `${exporting.i}/${exporting.n}`
-                : 'AVI'}
-            </Button>
-          </ButtonRow>
-          <Button $grow onClick={exportFrame} disabled={Boolean(exporting)}>
-            <Download size={16} />
-            NRRD
-          </Button>
-        </SidebarSection>
+        {section(
+          'cine',
+          'Cine',
+          <CinePanel
+            volume={volume}
+            timeIndex={timeIndex}
+            onSeek={seek}
+            playing={cine.playing}
+            onTogglePlay={() => cine.setPlaying((p) => !p)}
+            cineRate={cine.cineRate}
+            exporting={exporting}
+            ecg={ecg}
+          />
+        )}
+        {section(
+          'planes',
+          'Planes',
+          <PlanesPanel
+            volume={volume}
+            crosshair={crosshair}
+            onCrosshairChange={setCrosshair}
+            onResetTilt={resetTilt}
+            slabMm={settings.slabMm}
+            slabMode={settings.slabMode}
+            onSettingsChange={actions.set}
+          />
+        )}
+        {section(
+          'tools',
+          'Tools',
+          <ToolsPanel
+            tool={tool}
+            onToolChange={(next) => actions.set({ tool: next })}
+            onClear={measure.clear}
+            canClear={measure.measurements.length > 0}
+          />
+        )}
+        {section(
+          'measure',
+          'Measurements',
+          <MeasurementsPanel
+            measurements={measure.measurements}
+            selectedId={measure.selectedId}
+            volume={volume}
+            timeIndex={timeIndex}
+            mprCenter={mprCenter}
+            mprBasis={mprBasis}
+            onRestore={restoreMeasurement}
+            onDelete={measure.remove}
+          />
+        )}
+        {section(
+          'image',
+          'Image',
+          <ImagePanel
+            windowCenter={windowCenter}
+            windowWidth={windowWidth}
+            onWindowLevelChange={setWindowLevel}
+            zoom={zoom}
+            onZoomChange={setZoom}
+          />
+        )}
+        {section('volume', 'Volume', <VolumePanel settings={settings} actions={actions} />)}
+        {section(
+          'export',
+          'Export',
+          <ExportPanel
+            exporting={exporting}
+            frameCount={volume.dims.t}
+            onPng={exports.exportPng}
+            onAvi={exports.exportAvi}
+            onNrrd={exports.exportNrrd}
+          />
+        )}
 
         <Meta>
           {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
@@ -2330,162 +223,74 @@ const MPRViewer = () => {
       </ControlSidebar>
 
       <Viewport ref={viewportRef}>
-      <Grid>
-        {['axial', 'coronal', 'sagittal'].map((axis) => (
-          <MPRSlicePane
-            key={axis}
-            axis={axis}
-            volume={volume}
-            timeIndex={timeIndex}
-            mprCenter={mprCenter}
-            mprBasis={mprBasis}
-            windowCenter={windowCenter}
-            windowWidth={windowWidth}
-            onCenterChange={setMprCenter}
-            onBasisChange={setMprBasis}
-            zoom={zoom}
-            onZoomChange={setZoom}
-            viewEpoch={viewEpoch}
-            tool={tool}
-            measurements={measurements}
-            selectedMeasurementId={selectedMeasurementId}
-            onSelectMeasurement={setSelectedMeasurementId}
-            onAddMeasurement={addMeasurement}
-            onUpdateMeasurement={updateMeasurement}
-            onLiveDraftChange={setLiveDraft}
-            onClearDraftSignal={clearDraftSignal}
-            slabMm={slabMm}
-            slabMode={slabMode}
-            maximized={maximizedPane === axis}
-            hidden={Boolean(maximizedPane && maximizedPane !== axis)}
-            onToggleMaximize={() =>
-              setMaximizedPane((p) => (p === axis ? null : axis))
-            }
-            onOpenMenu={openViewMenu}
-          />
-        ))}
-        <Pane
-          $borderColor="#3d9a8b"
-          $maximized={maximizedPane === 'volume'}
-          $hidden={Boolean(maximizedPane && maximizedPane !== 'volume')}
-          onPointerDown={(e) => {
-            if (e.button !== 0) return;
-            if (e.target.closest('button')) return;
-            volClickRef.current = { x: e.clientX, y: e.clientY, consumed: false };
-          }}
-          onPointerMove={(e) => {
-            const start = volClickRef.current;
-            if (!start || start.consumed) return;
-            if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6) {
-              start.consumed = true;
-            }
-          }}
-          onPointerUp={(e) => {
-            const start = volClickRef.current;
-            volClickRef.current = null;
-            if (e.button !== 0 || !start || start.consumed) return;
-            if (e.target.closest('button')) return;
-            if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6) return;
-            openViewMenu({ x: e.clientX, y: e.clientY, pane: 'volume' });
-          }}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            if (e.target.closest('button')) return;
-            openViewMenu({ x: e.clientX, y: e.clientY, pane: 'volume' });
-          }}
-        >
-          <PaneLabel $color="#3d9a8b">3D Volume</PaneLabel>
-          <PaneTools>
-            <IconBtn
-              type="button"
-              title="Reset 3D camera"
-              onClick={(e) => {
-                e.stopPropagation();
-                setCameraResetToken((n) => n + 1);
-              }}
-            >
-              <RotateCcw size={14} />
-            </IconBtn>
-            <IconBtn
-              type="button"
-              title={
-                maximizedPane === 'volume' ? 'Restore 2×2' : 'Maximize 3D'
-              }
-              onClick={(e) => {
-                e.stopPropagation();
-                setMaximizedPane((p) => (p === 'volume' ? null : 'volume'));
-              }}
-            >
-              {maximizedPane === 'volume' ? (
-                <Minimize2 size={14} />
-              ) : (
-                <Maximize2 size={14} />
-              )}
-            </IconBtn>
-          </PaneTools>
-          <Canvas
-            flat
-            dpr={[1, 2]}
-            camera={{ position: [1.15, 0.82, 1.25], fov: 32, near: 0.05, far: 30 }}
-            style={{
-              width: '100%',
-              height: '100%',
-              background: STYLE_BG[colorStyle] || STYLE_BG.glass,
-            }}
-            gl={{
-              antialias: true,
-              alpha: false,
-              powerPreference: 'high-performance',
-              stencil: false,
-              preserveDrawingBuffer: true,
-            }}
-          >
-            <VolumeRenderer
+        <Grid>
+          {SLICE_AXES.map((axis) => (
+            <MPRSlicePane
+              key={axis}
+              axis={axis}
               volume={volume}
               timeIndex={timeIndex}
-              windowCenter={windowCenter}
-              windowWidth={windowWidth}
-              opacity={opacity}
-              renderMode={renderMode}
-              colorStyle={colorStyle}
-              useCutPlanes={useCutPlanes}
-              cropPlaneKey={cropPlaneKey}
-              cropFlip={cropFlip}
-              showMprLines={showMprLines}
               mprCenter={mprCenter}
               mprBasis={mprBasis}
-              lightAzimuth={lightAzimuth}
-              lightElevation={lightElevation}
-              lightIntensity={lightIntensity}
-              measurements={measurements}
-              selectedMeasurementId={selectedMeasurementId}
-              liveDraft={liveDraft}
-              cameraResetToken={cameraResetToken}
-              forceHighQuality={Boolean(exporting)}
+              windowCenter={windowCenter}
+              windowWidth={windowWidth}
+              onCenterChange={setMprCenter}
+              onBasisChange={setMprBasis}
+              zoom={zoom}
+              onZoomChange={setZoom}
+              viewEpoch={settings.viewEpoch}
+              tool={tool}
+              measurements={measure.measurements}
+              selectedMeasurementId={measure.selectedId}
+              onSelectMeasurement={measure.setSelectedId}
+              onAddMeasurement={measure.add}
+              onUpdateMeasurement={measure.update}
+              onLiveDraftChange={measure.setLiveDraft}
+              onClearDraftSignal={measure.clearDraftSignal}
+              slabMm={settings.slabMm}
+              slabMode={settings.slabMode}
+              maximized={maximizedPane === axis}
+              hidden={Boolean(maximizedPane && maximizedPane !== axis)}
+              onToggleMaximize={() => actions.toggleMaximized(axis)}
+              onOpenMenu={openMenu}
             />
-          </Canvas>
-        </Pane>
-      </Grid>
-      {ecg ? (
-        <EcgStrip
-          ecg={ecg}
-          timeIndex={timeIndex}
-          frameCount={volume.dims.t}
-          onSeek={(t) => {
-            setPlaying(false);
-            setTimeIndex(t);
-          }}
-        />
-      ) : null}
+          ))}
+          <VolumePane
+            settings={settings}
+            maximized={maximizedPane === 'volume'}
+            hidden={Boolean(maximizedPane && maximizedPane !== 'volume')}
+            onToggleMaximize={() => actions.toggleMaximized('volume')}
+            onResetCamera={() => actions.bump('cameraResetToken')}
+            onOpenMenu={openMenu}
+            forceHighQuality={Boolean(exporting)}
+            volume={volume}
+            timeIndex={timeIndex}
+            windowCenter={windowCenter}
+            windowWidth={windowWidth}
+            mprCenter={mprCenter}
+            mprBasis={mprBasis}
+            measurements={measure.measurements}
+            selectedMeasurementId={measure.selectedId}
+            liveDraft={measure.liveDraft}
+          />
+        </Grid>
+        {ecg ? (
+          <EcgStrip
+            ecg={ecg}
+            timeIndex={timeIndex}
+            frameCount={volume.dims.t}
+            onSeek={seek}
+          />
+        ) : null}
       </Viewport>
       <ViewContextMenu
         menu={viewMenu}
         tool={tool}
         maximized={viewMenu ? maximizedPane === viewMenu.pane : false}
-        showMprLines={showMprLines}
-        useCutPlanes={useCutPlanes}
+        showMprLines={settings.showMprLines}
+        useCutPlanes={settings.useCutPlanes}
         onAction={runViewMenu}
-        onClose={() => setViewMenu(null)}
+        onClose={() => actions.set({ viewMenu: null })}
       />
     </Container>
   );

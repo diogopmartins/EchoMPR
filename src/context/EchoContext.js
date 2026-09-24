@@ -4,8 +4,6 @@ import { identityBasis } from '../utils/mprGeometry';
 const EchoContext = createContext();
 
 const initialState = {
-  images: [],
-  currentImage: null,
   volume: null,
   meta: null,
   timeIndex: 0,
@@ -29,15 +27,6 @@ const echoReducer = (state, action) => {
       return { ...state, loadProgress: action.payload };
     case 'SET_ERROR':
       return { ...state, error: action.payload, loading: false };
-    case 'ADD_IMAGES':
-      return {
-        ...state,
-        images: [...state.images, ...action.payload],
-        loading: false,
-        loadProgress: 1,
-      };
-    case 'SET_CURRENT_IMAGE':
-      return { ...state, currentImage: action.payload };
     case 'SET_VOLUME': {
       const volume = action.payload.volume;
       const mid = volume
@@ -51,10 +40,6 @@ const echoReducer = (state, action) => {
         ...state,
         volume,
         meta: action.payload.meta || null,
-        currentImage: action.payload.dicomData || state.currentImage,
-        images: action.payload.dicomData
-          ? [action.payload.dicomData]
-          : state.images,
         timeIndex: 0,
         mprCenter: mid,
         mprBasis: identityBasis(),
@@ -142,9 +127,6 @@ export const EchoProvider = ({ children }) => {
     setLoadProgress: (progress) =>
       dispatch({ type: 'SET_LOAD_PROGRESS', payload: progress }),
     setError: (error) => dispatch({ type: 'SET_ERROR', payload: error }),
-    addImages: (images) => dispatch({ type: 'ADD_IMAGES', payload: images }),
-    setCurrentImage: (image) =>
-      dispatch({ type: 'SET_CURRENT_IMAGE', payload: image }),
     setVolume: (payload) => dispatch({ type: 'SET_VOLUME', payload }),
     setTimeIndex: (t) => dispatch({ type: 'SET_TIME_INDEX', payload: t }),
     setCrosshair: (partial) =>
