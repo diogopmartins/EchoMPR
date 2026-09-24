@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
+import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js';
 import { getVolumeAtTime, physicalSizeMm } from '../utils/philipsVolume';
 import { mmToUnitBox, voxelToMm } from '../utils/mprGeometry';
+import { maskToField } from '../utils/segmentation';
 
 const vertexShader = /* glsl */ `
 out vec3 vOrigin;
@@ -561,6 +563,101 @@ function MeasurementOverlay({
   );
 }
 
+/** Grid resolution for segmentation surfaces (cells per box edge). */
+const SURFACE_RES = 64;
+const SURFACE_PAD = 2;
+
+/**
+ * Iso-surface of one segmentation mask. The mask is averaged into a cubic
+ * grid with a two-cell empty border (MarchingCubes skips its outer layer),
+ * then positioned so grid cell centres land on the unit box.
+ */
+function SegmentationSurface({ mask, dims, color, rev }) {
+  const material = useMemo(
+    () =>
+      new THREE.MeshPhongMaterial({
+        color,
+        transparent: true,
+        opacity: 0.6,
+        shininess: 40,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    [color]
+  );
+  const mc = useMemo(() => {
+    const size = SURFACE_RES + 2 * SURFACE_PAD;
+    const cubes = new MarchingCubes(size, material, false, false, 160000);
+    cubes.isolation = 0.5;
+    cubes.frustumCulled = false;
+    cubes.renderOrder = 4;
+    return cubes;
+  }, [material]);
+
+  useEffect(() => {
+    const size = SURFACE_RES + 2 * SURFACE_PAD;
+    const field = maskToField(mask, dims, SURFACE_RES);
+    mc.field.fill(0);
+    for (let z = 0; z < SURFACE_RES; z++)
+      for (let y = 0; y < SURFACE_RES; y++) {
+        const src = (z * SURFACE_RES + y) * SURFACE_RES;
+        const dst = ((z + SURFACE_PAD) * size + (y + SURFACE_PAD)) * size + SURFACE_PAD;
+        mc.field.set(field.subarray(src, src + SURFACE_RES), dst);
+      }
+    // Normal cache must be cleared or stale gradients leak between updates.
+    mc.normal_cache.fill(0);
+    mc.update();
+  }, [mc, mask, dims, rev]);
+
+  useEffect(
+    () => () => {
+      mc.geometry.dispose();
+      material.dispose();
+    },
+    [mc, material]
+  );
+
+  // MarchingCubes spans [-1, 1]; map cell i to ((i - pad) + 0.5) / res - 0.5.
+  const size = SURFACE_RES + 2 * SURFACE_PAD;
+  const s = size / (2 * SURFACE_RES);
+  const o = (size / 2 - SURFACE_PAD + 0.5) / SURFACE_RES - 0.5;
+  return <primitive object={mc} scale={[s, s, s]} position={[o, o, o]} />;
+}
+
+function AnnulusOverlay3D({ volume, annulus, scale }) {
+  const invScale = useMemo(
+    () => [1 / (scale[0] || 1), 1 / (scale[1] || 1), 1 / (scale[2] || 1)],
+    [scale]
+  );
+  if (!annulus) return null;
+  const toBox = (mm) => mmToUnitBox(volume, mm);
+  const curve = annulus.curve ? annulus.curve.map(toBox) : null;
+  return (
+    <group>
+      {curve && (
+        <Line
+          points={[...curve, curve[0]]}
+          color={annulus.color}
+          lineWidth={3}
+          renderOrder={7}
+          depthTest={false}
+          transparent
+          opacity={0.95}
+        />
+      )}
+      {annulus.points.map((p, i) => (
+        <MeasureBall
+          key={i}
+          position={toBox(p)}
+          color={annulus.color}
+          radius={0.0075}
+          invScale={invScale}
+        />
+      ))}
+    </group>
+  );
+}
+
 function VolumeMesh({
   volume,
   timeIndex,
@@ -583,6 +680,8 @@ function VolumeMesh({
   measurements,
   selectedMeasurementId,
   liveDraft,
+  annulus,
+  segments,
 }) {
   const materialRef = useRef();
   const { gl, size } = useThree();
@@ -791,6 +890,16 @@ function VolumeMesh({
         liveDraft={liveDraft}
         scale={scale}
       />
+      {(segments || []).map((seg) => (
+        <SegmentationSurface
+          key={seg.id}
+          mask={seg.mask}
+          dims={volume.dims}
+          color={seg.color}
+          rev={seg.rev}
+        />
+      ))}
+      <AnnulusOverlay3D volume={volume} annulus={annulus} scale={scale} />
     </group>
   );
 }
@@ -849,6 +958,8 @@ const VolumeRenderer = ({
   measurements,
   selectedMeasurementId,
   liveDraft,
+  annulus = null,
+  segments = [],
   cameraResetToken = 0,
   forceHighQuality = false,
 }) => {
@@ -883,6 +994,8 @@ const VolumeRenderer = ({
         measurements={measurements}
         selectedMeasurementId={selectedMeasurementId}
         liveDraft={liveDraft}
+        annulus={annulus}
+        segments={segments}
       />
       <CameraRig
         resetToken={cameraResetToken}

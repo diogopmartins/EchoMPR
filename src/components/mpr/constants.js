@@ -21,6 +21,9 @@ export const DEFAULT_SECTIONS = {
   image: false,
   volume: false,
   export: false,
+  annulus: false,
+  segment: false,
+  ai: false,
 };
 
 /** Zoom used by the "Fit" actions. */
