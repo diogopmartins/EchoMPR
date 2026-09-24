@@ -137,69 +137,10 @@ export function buildPhilipsVolume(dataSet, arrayBuffer) {
   };
 }
 
-export function volumeIndex(volume, t, z, y, x) {
-  const { dims, volumeSize } = volume;
-  return (
-    t * volumeSize +
-    z * (dims.y * dims.x) +
-    y * dims.x +
-    x
-  );
-}
-
 export function getVolumeAtTime(volume, t) {
   const ti = Math.max(0, Math.min(volume.dims.t - 1, t | 0));
   const start = ti * volume.volumeSize;
   return volume.voxels.subarray(start, start + volume.volumeSize);
-}
-
-/**
- * Extract an orthogonal slice as Uint8Array (raw intensities).
- * axis: 'axial' (Z), 'coronal' (Y), 'sagittal' (X)
- */
-export function sampleSlice(volume, axis, index, t = 0) {
-  const { dims } = volume;
-  const ti = Math.max(0, Math.min(dims.t - 1, t | 0));
-  const vol = getVolumeAtTime(volume, ti);
-
-  if (axis === 'axial') {
-    const zi = clampIndex(index, dims.z);
-    const width = dims.x;
-    const height = dims.y;
-    const out = new Uint8Array(width * height);
-    const planeOffset = zi * dims.y * dims.x;
-    out.set(vol.subarray(planeOffset, planeOffset + width * height));
-    return { data: out, width, height, axis, index: zi };
-  }
-
-  if (axis === 'coronal') {
-    const yi = clampIndex(index, dims.y);
-    const width = dims.x;
-    const height = dims.z;
-    const out = new Uint8Array(width * height);
-    for (let z = 0; z < dims.z; z++) {
-      const src = z * dims.y * dims.x + yi * dims.x;
-      const dst = z * width;
-      out.set(vol.subarray(src, src + width), dst);
-    }
-    return { data: out, width, height, axis, index: yi };
-  }
-
-  // sagittal
-  const xi = clampIndex(index, dims.x);
-  const width = dims.y;
-  const height = dims.z;
-  const out = new Uint8Array(width * height);
-  for (let z = 0; z < dims.z; z++) {
-    for (let y = 0; y < dims.y; y++) {
-      out[z * width + y] = vol[z * dims.y * dims.x + y * dims.x + xi];
-    }
-  }
-  return { data: out, width, height, axis, index: xi };
-}
-
-function clampIndex(index, size) {
-  return Math.max(0, Math.min(size - 1, Math.round(index)));
 }
 
 /**

@@ -2,22 +2,9 @@ import * as dicomParser from 'dicom-parser';
 import {
   buildPhilipsVolume,
   readElementNumber,
-  applyWindowLevel,
   getVolumeAtTime,
-  sampleSlice,
-  renderSliceToCanvas,
-  physicalSizeMm,
 } from './philipsVolume';
 import { extractEcg } from './ecg';
-
-export {
-  buildPhilipsVolume,
-  applyWindowLevel,
-  getVolumeAtTime,
-  sampleSlice,
-  renderSliceToCanvas,
-  physicalSizeMm,
-};
 
 /**
  * Parse a DICOM File/Blob. Returns metadata + optional Philips 4D volume.
@@ -61,20 +48,13 @@ export const parseDicomFile = async (file, options = {}) => {
   }
 
   dicomData.volume = volume;
-  dicomData.is4D = Boolean(volume && volume.dims.t > 1);
-  dicomData.isVolume = Boolean(volume && volume.dims.z > 1);
-  dicomData.frameCount = volume ? volume.dims.t : dicomData.numberOfFrames;
 
   if (volume) {
-    dicomData.pixelArray = volume.voxels;
     try {
       volume.ecg = extractEcg(dataSet, arrayBuffer);
     } catch (err) {
       console.warn('ECG extract failed:', err.message);
     }
-  } else if (dataSet.elements.x7fe00010) {
-    const pe = dataSet.elements.x7fe00010;
-    dicomData.pixelArray = new Uint8Array(arrayBuffer, pe.dataOffset, pe.length);
   }
 
   return dicomData;
@@ -102,56 +82,11 @@ const getStringValue = (dataSet, tag) => {
   return '';
 };
 
-/** 2D preview from mid-volume axial slice */
-export const createImageFromDicom = (dicomData, frameIndex = 0) => {
-  if (dicomData.volume) {
-    const midZ = Math.floor(dicomData.volume.dims.z / 2);
-    const slice = sampleSlice(dicomData.volume, 'axial', midZ, frameIndex);
-    const canvas = document.createElement('canvas');
-    renderSliceToCanvas(
-      canvas,
-      slice,
-      dicomData.windowCenter,
-      dicomData.windowWidth
-    );
-    return canvas;
-  }
-
-  if (!dicomData.pixelArray || !dicomData.rows || !dicomData.columns) {
-    throw new Error('Invalid DICOM data for image creation');
-  }
-
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  canvas.width = dicomData.columns;
-  canvas.height = dicomData.rows;
-  const imageData = ctx.createImageData(dicomData.columns, dicomData.rows);
-  const data = imageData.data;
-  const pixelArray = dicomData.pixelArray;
-
-  for (let i = 0; i < dicomData.rows * dicomData.columns; i++) {
-    const v = applyWindowLevel(
-      pixelArray[i],
-      dicomData.windowCenter,
-      dicomData.windowWidth
-    );
-    const index = i * 4;
-    data[index] = v;
-    data[index + 1] = v;
-    data[index + 2] = v;
-    data[index + 3] = 255;
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-  return canvas;
-};
-
-export const exportToNRRD = (dicomData, frameIndex = 0) => {
-  if (!dicomData.volume) {
+export const exportToNRRD = (vol, frameIndex = 0) => {
+  if (!vol) {
     throw new Error('No volume data available');
   }
 
-  const vol = dicomData.volume;
   const voxels = getVolumeAtTime(vol, frameIndex);
   const { dims, spacingCm } = vol;
 
@@ -173,16 +108,4 @@ export const exportToNRRD = (dicomData, frameIndex = 0) => {
   nrrdData.set(headerBytes, 0);
   nrrdData.set(voxels, headerBytes.length);
   return nrrdData;
-};
-
-export const extractTimeframe = (dicomData, frameIndex) => {
-  if (!dicomData.volume) {
-    throw new Error('Not a volume dataset');
-  }
-  return {
-    ...dicomData,
-    pixelArray: getVolumeAtTime(dicomData.volume, frameIndex),
-    frameIndex,
-    isSingleFrame: true,
-  };
 };

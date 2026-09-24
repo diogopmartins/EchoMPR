@@ -1604,7 +1604,6 @@ function EcgStrip({ ecg, timeIndex, frameCount, onSeek }) {
 const MPRViewer = () => {
   const {
     volume,
-    currentImage,
     timeIndex,
     setTimeIndex,
     crosshair,
@@ -1761,9 +1760,9 @@ const MPRViewer = () => {
   };
 
   const exportFrame = () => {
-    if (!currentImage?.volume) return;
+    if (!volume) return;
     try {
-      const nrrd = exportToNRRD(currentImage, timeIndex);
+      const nrrd = exportToNRRD(volume, timeIndex);
       const blob = new Blob([nrrd], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
