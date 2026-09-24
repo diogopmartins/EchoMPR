@@ -107,3 +107,113 @@ export function drawAreaMeasure(ctx, pts, mmPts, right, down, { live, selected, 
     );
   }
 }
+
+/**
+ * Rasterise a slice-aligned label image into a small canvas: translucent
+ * fill plus an opaque outline, ready to be stretched over the pane.
+ */
+export function maskToCanvas(labels, width, height, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(width, height);
+  const n = (color || '#ff4fa3').replace('#', '');
+  const r = parseInt(n.slice(0, 2), 16);
+  const g = parseInt(n.slice(2, 4), 16);
+  const b = parseInt(n.slice(4, 6), 16);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (!labels[i]) continue;
+      const edge =
+        x === 0 ||
+        y === 0 ||
+        x === width - 1 ||
+        y === height - 1 ||
+        !labels[i - 1] ||
+        !labels[i + 1] ||
+        !labels[i - width] ||
+        !labels[i + width];
+      const o = i * 4;
+      img.data[o] = r;
+      img.data[o + 1] = g;
+      img.data[o + 2] = b;
+      img.data[o + 3] = edge ? 235 : 70;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/**
+ * Annulus on a 2D pane: hinge points lying on this plane, the fitted curve's
+ * crossings with the plane (rings), or the whole curve projected when the
+ * pane looks down the annulus axis.
+ */
+export function drawAnnulusOverlay(ctx, { points, curve, fitNormal, color, toCssMm, planePoint, planeNormal, tolMm, crossings }) {
+  ctx.save();
+  const dist = (p) =>
+    Math.abs(
+      (p[0] - planePoint[0]) * planeNormal[0] +
+        (p[1] - planePoint[1]) * planeNormal[1] +
+        (p[2] - planePoint[2]) * planeNormal[2]
+    );
+  const facing =
+    fitNormal &&
+    Math.abs(
+      fitNormal[0] * planeNormal[0] + fitNormal[1] * planeNormal[1] + fitNormal[2] * planeNormal[2]
+    ) > 0.7;
+
+  if (curve?.length && facing) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    curve.forEach((p, i) => {
+      const c = toCssMm(p);
+      if (i === 0) ctx.moveTo(c.x, c.y);
+      else ctx.lineTo(c.x, c.y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+    ctx.setLineDash([]);
+  } else if (crossings?.length) {
+    crossings.forEach((p) => {
+      const c = toCssMm(p);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 7, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+  }
+
+  points.forEach((p, i) => {
+    if (dist(p) > tolMm) return;
+    const c = toCssMm(p);
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = '600 10px "IBM Plex Sans", "Segoe UI", sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(String(i + 1), c.x + 7, c.y - 6);
+  });
+  ctx.restore();
+}
+
+/** Dashed ring showing the brush footprint at the cursor. */
+export function drawBrushRing(ctx, x, y, radiusPx, erase) {
+  ctx.save();
+  ctx.strokeStyle = erase ? '#ff8a80' : '#b9f6ca';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.arc(x, y, Math.max(2, radiusPx), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}

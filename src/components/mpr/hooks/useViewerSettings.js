@@ -23,6 +23,7 @@ export const initialViewerSettings = {
   slabMode: 'mean',
   viewEpoch: 0,
   tool: 'navigate',
+  annulusPlanes: 6,
   // Layout
   maximizedPane: null,
   openSections: DEFAULT_SECTIONS,

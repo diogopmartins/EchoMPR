@@ -13,6 +13,8 @@ import {
   imageToWorldMm,
   worldMmToImage,
   distanceMm,
+  voxelToMm,
+  spacingMm,
   add as addVec,
   sub as subVec,
 } from '../../utils/mprGeometry';
@@ -27,10 +29,15 @@ import {
   isSliceMeasurementVisible,
   measureColor,
 } from '../../utils/measurements';
+import { sampleMaskOnSlice } from '../../utils/segmentation';
+import { curvePlaneCrossings } from '../../utils/annulus';
 import {
   drawTiltedLine,
   drawDistanceMeasure,
   drawAreaMeasure,
+  drawAnnulusOverlay,
+  drawBrushRing,
+  maskToCanvas,
 } from './overlayDraw';
 import { AXIS_META } from './constants';
 import { Pane, PaneLabel, PaneTools, IconBtn } from './styles';
@@ -85,6 +92,13 @@ export default function MPRSlicePane({
   hidden = false,
   onToggleMaximize,
   onOpenMenu,
+  annulus = null,
+  segments = [],
+  brushRadiusMm = 4,
+  onAnnulusPoint,
+  onSeed,
+  onBrush,
+  onBrushEnd,
 }) {
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
@@ -99,6 +113,10 @@ export default function MPRSlicePane({
   basisRef.current = mprBasis;
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const maskCacheRef = useRef(new Map());
+  const brushCursorRef = useRef(null);
+  const isBrushTool = tool === 'paint' || tool === 'erase';
+  const isMeasureTool = tool === 'navigate' || tool === 'distance' || tool === 'area';
 
   useEffect(() => {
     viewOriginRef.current = { ...mprCenter };
@@ -168,6 +186,26 @@ export default function MPRSlicePane({
         return { x: ox + p.x, y: oy + p.y };
       };
 
+      const cache = maskCacheRef.current;
+      const live = new Set();
+      ctx.imageSmoothingEnabled = false;
+      segments.forEach((seg) => {
+        live.add(seg.id);
+        let entry = cache.get(seg.id);
+        if (!entry || entry.slice !== s || entry.rev !== seg.rev || entry.mask !== seg.mask) {
+          const labels = sampleMaskOnSlice(seg.mask, volume, s);
+          entry = {
+            slice: s,
+            rev: seg.rev,
+            mask: seg.mask,
+            canvas: maskToCanvas(labels, s.width, s.height, seg.color),
+          };
+          cache.set(seg.id, entry);
+        }
+        ctx.drawImage(entry.canvas, ox, oy, dw, dh);
+      });
+      for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
+
       const cx = toCss(s.crossU ?? (sw - 1) / 2, s.crossV ?? (sh - 1) / 2).x;
       const cy = toCss(s.crossU ?? (sw - 1) / 2, s.crossV ?? (sh - 1) / 2).y;
       const half = Math.hypot(dw, dh);
@@ -235,8 +273,47 @@ export default function MPRSlicePane({
         if (draft.type === 'distance') drawDistance(draft.points, draft.cursor, true);
         else drawArea(draft.points, draft.cursor, true);
       }
+
+      if (annulus && (annulus.points.length || annulus.curve)) {
+        const planeNormal = mprBasis[viewSpec(axis).normalKey];
+        const planePoint = voxelToMm(volume, mprCenter);
+        const sp = spacingMm(volume);
+        drawAnnulusOverlay(ctx, {
+          points: annulus.points,
+          curve: annulus.curve,
+          fitNormal: annulus.normal,
+          color: annulus.color,
+          planePoint,
+          planeNormal,
+          tolMm: Math.max(sp.x, sp.y, sp.z) * 1.5,
+          crossings: annulus.curve ? curvePlaneCrossings(annulus.curve, planePoint, planeNormal) : [],
+          toCssMm: (mm) => {
+            const im = worldMmToImage(volume, s, mm);
+            return toCss(im.u, im.v);
+          },
+        });
+      }
+
+      const cursor = brushCursorRef.current;
+      if (isBrushTool && cursor) {
+        drawBrushRing(ctx, cursor.x, cursor.y, (brushRadiusMm / s.pixelMm) * (dw / s.width), tool === 'erase');
+      }
     },
-    [axis, draft, measurements, mprBasis, mprCenter, selectedMeasurementId, timeIndex, tool, volume]
+    [
+      axis,
+      draft,
+      measurements,
+      mprBasis,
+      mprCenter,
+      selectedMeasurementId,
+      timeIndex,
+      tool,
+      volume,
+      annulus,
+      segments,
+      isBrushTool,
+      brushRadiusMm,
+    ]
   );
 
   const drawOverlayRef = useRef(drawOverlay);
@@ -396,7 +473,7 @@ export default function MPRSlicePane({
 
   const hitMeasurement = (pos) => {
     const slice = sliceRef.current;
-    if (!slice || !pos || draftRef.current) return null;
+    if (!slice || !pos || draftRef.current || !isMeasureTool) return null;
     const vis = visibleMeasurements();
     let bestPt = null;
     let bestPtD = 10;
@@ -468,6 +545,20 @@ export default function MPRSlicePane({
     if (tool !== 'navigate') {
       clickStartRef.current.consumed = true;
       const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
+      if (tool === 'annulus') {
+        if (axis === 'sagittal') onAnnulusPoint?.(mm);
+        return;
+      }
+      if (tool === 'seed') {
+        onSeed?.(mm);
+        return;
+      }
+      if (isBrushTool) {
+        const normal = basisRef.current[viewSpec(axis).normalKey];
+        dragRef.current = { mode: 'brush', normal };
+        onBrush?.(mm, normal, tool === 'erase');
+        return;
+      }
       if (tool === 'distance') {
         if (!draft || draft.type !== 'distance') {
           setDraft({ axis, type: 'distance', points: [mm], cursor: mm });
@@ -574,6 +665,20 @@ export default function MPRSlicePane({
       return;
     }
 
+    if (isBrushTool) {
+      brushCursorRef.current = { x: pos.x, y: pos.y };
+      if (drag?.mode === 'brush') {
+        onBrush?.(imageToWorldMm(volume, slice, pos.imgU, pos.imgV), drag.normal, tool === 'erase');
+      }
+      drawOverlayRef.current(slice);
+      return;
+    }
+
+    if (tool === 'annulus' || tool === 'seed') {
+      e.currentTarget.style.cursor = tool === 'annulus' && axis !== 'sagittal' ? 'not-allowed' : 'crosshair';
+      return;
+    }
+
     if (drag?.mode === 'editPoint' || drag?.mode === 'editMove') {
       const mm = imageToWorldMm(volume, slice, pos.imgU, pos.imgV);
       if (drag.mode === 'editPoint') {
@@ -673,6 +778,7 @@ export default function MPRSlicePane({
   const onPointerUp = (e) => {
     const start = clickStartRef.current;
     clickStartRef.current = null;
+    if (dragRef.current?.mode === 'brush') onBrushEnd?.();
     dragRef.current = null;
     e.currentTarget.style.cursor = 'crosshair';
     if (e.button !== 0 || !start || start.consumed) return;
@@ -704,12 +810,20 @@ export default function MPRSlicePane({
   }, [axis]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const planeColor = AXIS_META[axis].color;
+  const HINTS = {
+    distance: 'Click two points to measure length · Drag points to edit',
+    area: 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel',
+    annulus:
+      axis === 'sagittal'
+        ? 'Click the two annulus hinge points on this plane; the planes then rotate to the next angle'
+        : 'Annulus points are picked in the Sagittal (red) view',
+    seed: 'Click inside a chamber to grow a segmentation from that point',
+    paint: 'Drag to paint the selected segmentation on this plane',
+    erase: 'Drag to erase the selected segmentation on this plane',
+  };
   const hint =
-    tool === 'distance'
-      ? 'Click two points to measure length · Drag points to edit'
-      : tool === 'area'
-        ? 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel'
-        : 'Left-click empty space for the menu · Drag a line near the ends to rotate · Drag the middle to move it · Wheel zoom · Shift+wheel scroll';
+    HINTS[tool] ||
+    'Left-click empty space for the menu · Drag a line near the ends to rotate · Drag the middle to move it · Wheel zoom · Shift+wheel scroll';
 
   return (
     <Pane
@@ -741,7 +855,13 @@ export default function MPRSlicePane({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerLeave={() => onLiveDraftChange?.(null)}
+        onPointerLeave={() => {
+          onLiveDraftChange?.(null);
+          if (brushCursorRef.current) {
+            brushCursorRef.current = null;
+            drawOverlayRef.current(sliceRef.current);
+          }
+        }}
         onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenu}
         title={hint}

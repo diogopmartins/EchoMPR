@@ -14,10 +14,14 @@ import MeasurementsPanel from './mpr/panels/MeasurementsPanel';
 import ImagePanel from './mpr/panels/ImagePanel';
 import VolumePanel from './mpr/panels/VolumePanel';
 import ExportPanel from './mpr/panels/ExportPanel';
+import AnnulusPanel from './mpr/panels/AnnulusPanel';
+import SegmentationPanel from './mpr/panels/SegmentationPanel';
 import useViewerSettings from './mpr/hooks/useViewerSettings';
 import useMeasurements from './mpr/hooks/useMeasurements';
 import useCine from './mpr/hooks/useCine';
 import useExports from './mpr/hooks/useExports';
+import useAnnulus from './mpr/hooks/useAnnulus';
+import useSegmentation from './mpr/hooks/useSegmentation';
 import { FIT_ZOOM } from './mpr/constants';
 import {
   Container,
@@ -52,6 +56,17 @@ const MPRViewer = () => {
   const { tool, zoom, maximizedPane, viewMenu, openSections } = settings;
 
   const measure = useMeasurements({ volume, timeIndex, mprCenter, mprBasis });
+  const annulus = useAnnulus({
+    volume,
+    timeIndex,
+    mprCenter,
+    mprBasis,
+    setMprCenter,
+    setMprBasis,
+    onStart: () => actions.set({ tool: 'annulus' }),
+    onFinish: () => actions.set({ tool: 'navigate' }),
+  });
+  const seg = useSegmentation({ volume, timeIndex });
 
   // useExports needs setPlaying and useCine needs `exporting`; route the
   // setter through a ref so the two hooks can reference each other.
@@ -191,6 +206,27 @@ const MPRViewer = () => {
           />
         )}
         {section(
+          'annulus',
+          'Mitral annulus',
+          <AnnulusPanel
+            annulus={annulus}
+            planes={settings.annulusPlanes}
+            onPlanesChange={(n) => actions.set({ annulusPlanes: n })}
+            timeIndex={timeIndex}
+          />
+        )}
+        {section(
+          'segment',
+          'Segmentation',
+          <SegmentationPanel
+            seg={seg}
+            tool={tool}
+            onToolChange={(next) => actions.set({ tool: next })}
+            timeIndex={timeIndex}
+            frameCount={volume.dims.t}
+          />
+        )}
+        {section(
           'image',
           'Image',
           <ImagePanel
@@ -253,6 +289,12 @@ const MPRViewer = () => {
               hidden={Boolean(maximizedPane && maximizedPane !== axis)}
               onToggleMaximize={() => actions.toggleMaximized(axis)}
               onOpenMenu={openMenu}
+              annulus={annulus.view}
+              segments={seg.visible}
+              brushRadiusMm={seg.params.brushMm}
+              onAnnulusPoint={annulus.addPoint}
+              onSeed={seg.seed}
+              onBrush={seg.brush}
             />
           ))}
           <VolumePane
@@ -272,6 +314,8 @@ const MPRViewer = () => {
             measurements={measure.measurements}
             selectedMeasurementId={measure.selectedId}
             liveDraft={measure.liveDraft}
+            annulus={annulus.view}
+            segments={seg.visible}
           />
         </Grid>
         {ecg ? (
