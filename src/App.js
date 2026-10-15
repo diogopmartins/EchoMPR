@@ -10,22 +10,24 @@ const AppContainer = styled.div`
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #0a0e12;
+  background: #212121;
 `;
 
 const ContentArea = styled(motion.div)`
   flex: 1;
   overflow: hidden;
   min-width: 0;
-  background: #0a0e12;
+  background: #212121;
 `;
 
 function AppShell() {
   const [activeView, setActiveView] = useState('upload');
+  const [preferExample, setPreferExample] = useState(false);
   const { volume, clearImages } = useEcho();
 
   const goUpload = () => {
     clearImages();
+    setPreferExample(false);
     setActiveView('upload');
   };
 
@@ -45,7 +47,10 @@ function AppShell() {
         {activeView === 'mpr' && volume ? (
           <MPRViewer />
         ) : (
-          <ImageUploader onUploaded={() => setActiveView('mpr')} />
+          <ImageUploader
+            autoLoad={preferExample}
+            onUploaded={() => setActiveView('mpr')}
+          />
         )}
       </ContentArea>
     </AppContainer>

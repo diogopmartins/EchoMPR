@@ -26,9 +26,3 @@ yarn-error.log*
 *.dcm
 *.dicom
 *.nrrd
-
-# python
-__pycache__/
-runs/
-*.onnx
-*.onnx.data

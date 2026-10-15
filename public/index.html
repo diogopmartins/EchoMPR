@@ -3,27 +3,45 @@
   <head>
     <meta charset="utf-8" />
     <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#1a222c" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#212121" />
     <meta
       name="description"
-      content="EchoMPR — browser-based multi-planar reconstruction for Philips QLAB Cartesian echo DICOM"
+      content="MPR for Philips QLAB Cartesian echo DICOM"
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-    <title>EchoMPR</title>
+    <title>MPR</title>
     <style>
-      body {
+      html, body, #root {
         margin: 0;
-        font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+        background: #212121;
+      }
+      body {
+        font-family: Arial, Helvetica, sans-serif;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
-        background: #1a222c;
-        min-height: 100vh;
+      }
+      /* Stack the control rail above the planes on phones so the viewer stays usable. */
+      @media (max-width: 900px) {
+        #root > div {
+          flex-direction: column !important;
+        }
+        #root aside {
+          width: 100% !important;
+          max-height: min(42vh, 360px);
+          flex-shrink: 0 !important;
+          border-right: none !important;
+          border-bottom: 1px solid #4a4a4a;
+          -webkit-overflow-scrolling: touch;
+        }
+      }
+      @media (max-width: 560px) {
+        #root aside {
+          max-height: min(38vh, 300px);
+          padding: 0.7rem 0.7rem 0.85rem !important;
+        }
       }
     </style>
   </head>

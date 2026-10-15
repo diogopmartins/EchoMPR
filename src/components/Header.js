@@ -8,8 +8,8 @@ const HeaderContainer = styled.header`
   align-items: center;
   gap: 1rem;
   padding: 0.65rem 1.25rem;
-  background: #12181f;
-  border-bottom: 1px solid #243040;
+  background: #2e2e2e;
+  border-bottom: 1px solid #4a4a4a;
   flex-shrink: 0;
 `;
 
@@ -17,8 +17,8 @@ const Logo = styled(motion.div)`
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  color: #f4f6f8;
-  font-family: 'Fraunces', Georgia, serif;
+  color: #ffffff;
+  font-family: Arial, Helvetica, sans-serif;
   font-size: 1.2rem;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -26,13 +26,13 @@ const Logo = styled(motion.div)`
 `;
 
 const LogoIcon = styled(Activity)`
-  color: #3d9a8b;
+  color: #4caf50;
 `;
 
 const NavBtn = styled.button`
-  background: ${(p) => (p.$active ? '#2d4a62' : 'transparent')};
-  border: 1px solid ${(p) => (p.$active ? '#3d9a8b' : '#3a4a5c')};
-  color: #e8e6e3;
+  background: ${(p) => (p.$active ? '#4caf50' : 'transparent')};
+  border: 1px solid ${(p) => (p.$active ? '#4caf50' : '#4a4a4a')};
+  color: #ffffff;
   border-radius: 6px;
   padding: 0.35rem 0.7rem;
   cursor: pointer;
@@ -47,7 +47,7 @@ const NavBtn = styled.button`
   }
 
   &:hover:not(:disabled) {
-    background: #243040;
+    background: ${(p) => (p.$active ? '#45a049' : '#383838')};
   }
 `;
 
@@ -55,7 +55,7 @@ const StatusIndicator = styled.div`
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  color: #9aa5b1;
+  color: #c8c8c8;
   font-size: 0.8rem;
   margin-left: auto;
 `;
@@ -64,7 +64,7 @@ const StatusDot = styled.div`
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: ${(p) => (p.$ready ? '#3d9a8b' : '#5a6a7a')};
+  background: ${(p) => (p.$ready ? '#4caf50' : '#4a4a4a')};
 `;
 
 const Header = ({ hasVolume, activeView, onUploadClick, onMprClick }) => {
@@ -76,7 +76,7 @@ const Header = ({ hasVolume, activeView, onUploadClick, onMprClick }) => {
         transition={{ duration: 0.3 }}
       >
         <LogoIcon size={20} />
-        EchoMPR
+        MPR
       </Logo>
 
       <NavBtn $active={activeView === 'upload'} onClick={onUploadClick}>

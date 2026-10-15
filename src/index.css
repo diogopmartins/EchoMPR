@@ -4,7 +4,7 @@
 
 body {
   margin: 0;
-  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  font-family: Arial, Helvetica, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -29,14 +29,14 @@ code {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1a222c;
+  background: #212121;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3a4a5c;
+  background: #4a4a4a;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #5a6a7a;
+  background: #383838;
 }

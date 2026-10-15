@@ -13,7 +13,6 @@
     "dicom-parser": "^1.8.21",
     "framer-motion": "^10.12.4",
     "lucide-react": "^0.263.1",
-    "onnxruntime-web": "^1.30.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
@@ -27,9 +26,7 @@
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d build",
-    "typecheck": "tsc -p .",
-    "smoke": "react-scripts test --watchAll=false --testPathPattern=smoke"
+    "deploy": "gh-pages -d build"
   },
   "eslintConfig": {
     "extends": [
@@ -51,7 +48,6 @@
   },
   "devDependencies": {
     "@types/three": "^0.159.0",
-    "gh-pages": "^6.2.0",
-    "typescript": "^4.9.5"
+    "gh-pages": "^6.2.0"
   }
 }
