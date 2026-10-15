@@ -1,0 +1,12 @@
+{
+  "files": {
+    "main.css": "/EchoMPR/static/css/main.955933b3.css",
+    "main.js": "/EchoMPR/static/js/main.52072f04.js",
+    "static/js/206.25b1595d.chunk.js": "/EchoMPR/static/js/206.25b1595d.chunk.js",
+    "index.html": "/EchoMPR/index.html"
+  },
+  "entrypoints": [
+    "static/css/main.955933b3.css",
+    "static/js/main.52072f04.js"
+  ]
+}

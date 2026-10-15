@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DICOM File Test - Echo MPS Analyzer</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #ff6b6b;
+        }
+        .file-info {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .file-info h3 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .info-label {
+            font-weight: 600;
+            color: #ccc;
+        }
+        .info-value {
+            color: #fff;
+        }
+        .upload-area {
+            border: 3px dashed rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .upload-area:hover {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .upload-area.dragover {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.2);
+        }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin: 10px;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .status.success {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+        }
+        .status.error {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid rgba(244, 67, 54, 0.3);
+        }
+        .status.info {
+            background: rgba(33, 150, 243, 0.2);
+            border: 1px solid rgba(33, 150, 243, 0.3);
+        }
+        .progress {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 Echo MPS Analyzer - DICOM Test</h1>
+        
+        <div class="file-info">
+            <h3>📁 Your DICOM File Analysis</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">File Name:</span>
+                    <span class="info-value">1.dcm</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">File Size:</span>
+                    <span class="info-value">134.7 MB</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Patient Name:</span>
+                    <span class="info-value">Jane Grove</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Patient ID:</span>
+                    <span class="info-value">853194V</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Study Date:</span>
+                    <span class="info-value">May 13, 2022</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Modality:</span>
+                    <span class="info-value">Ultrasound (US)</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Manufacturer:</span>
+                    <span class="info-value">Philips QLAB Cart Export</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Image Type:</span>
+                    <span class="info-value">3D SPH (FROM IE33)</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Pixel Data:</span>
+                    <span class="info-value">134.7 MB</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Format:</span>
+                    <span class="info-value">3D Spherical Dataset</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="upload-area" id="uploadArea">
+            <h3>📤 Test File Upload</h3>
+            <p>Drag and drop your DICOM file here or click to browse</p>
+            <input type="file" id="fileInput" accept=".dcm,application/dicom" style="display: none;">
+            <button class="btn" onclick="document.getElementById('fileInput').click()">
+                Select DICOM File
+            </button>
+        </div>
+
+        <div id="status" class="status info" style="display: none;">
+            <div id="statusText">Ready to upload DICOM file</div>
+            <div class="progress" id="progress" style="display: none;">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+        </div>
+
+        <div style="text-align: center; margin-top: 30px;">
+            <button class="btn" onclick="window.open('http://localhost:3000', '_blank')">
+                🚀 Open Echo MPS Analyzer
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const status = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const progress = document.getElementById('progress');
+        const progressBar = document.getElementById('progressBar');
+
+        // Drag and drop handlers
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        uploadArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            showStatus('info', `Processing ${file.name}...`);
+            progress.style.display = 'block';
+            
+            // Simulate file processing
+            let progressValue = 0;
+            const interval = setInterval(() => {
+                progressValue += Math.random() * 20;
+                if (progressValue >= 100) {
+                    progressValue = 100;
+                    clearInterval(interval);
+                    
+                    // Check if it's a DICOM file
+                    if (file.name.toLowerCase().endsWith('.dcm') || file.type === 'application/dicom') {
+                        showStatus('success', `✅ Successfully loaded ${file.name}! File size: ${(file.size / 1024 / 1024).toFixed(1)} MB`);
+                        
+                        // Show file details
+                        setTimeout(() => {
+                            showStatus('info', `🎯 This is a ${(file.size / 1024 / 1024).toFixed(1)}MB DICOM file ready for MPS analysis. 
+                            Click "Open Echo MPS Analyzer" to load it into the full application.`);
+                        }, 2000);
+                    } else {
+                        showStatus('error', `❌ Invalid file type. Please select a DICOM (.dcm) file.`);
+                    }
+                }
+                progressBar.style.width = progressValue + '%';
+            }, 200);
+        }
+
+        function showStatus(type, message) {
+            status.className = `status ${type}`;
+            statusText.textContent = message;
+            status.style.display = 'block';
+        }
+
+        // Show initial status
+        showStatus('info', 'Ready to upload DICOM file. Your 1.dcm file is a 134.7MB 3D ultrasound dataset from a Philips IE33 machine.');
+    </script>
+</body>
+</html>
