@@ -5,6 +5,25 @@ export const EXAMPLES = [
   { id: 'mv', label: 'Mitral valve' },
 ];
 
+function inEchoWizard() {
+  return typeof window !== 'undefined' && window.location.pathname.includes('/static/echompr');
+}
+
+function publicFile(path) {
+  const base = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+  return `${base}${path}`;
+}
+
+export function exampleUrl(id) {
+  if (inEchoWizard()) return `/mpr/examples/${id}`;
+  return publicFile(`/examples/${id}.dcm`);
+}
+
+export function valveUrl(key) {
+  if (inEchoWizard()) return `/mpr/valves/${key}`;
+  return publicFile(`/valves/${key}.stl`);
+}
+
 /**
  * Fetch the anonymised example study and load it into Echo context.
  * The file stays a browser-side parse; this only downloads the example.
@@ -16,7 +35,7 @@ export async function loadExampleStudy(echo, exampleId, { onStatus, signal } = {
   setLoadProgress(0.02);
   onStatus?.(`Loading the ${example.label.toLowerCase()} example…`);
 
-  const response = await fetch(`/mpr/examples/${example.id}`, { signal });
+  const response = await fetch(exampleUrl(example.id), { signal });
   if (!response.ok) {
     throw new Error('The example study could not be loaded.');
   }

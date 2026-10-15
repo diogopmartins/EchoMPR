@@ -59,6 +59,7 @@ import {
 } from '../utils/ecg';
 import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
 import { encodeMjpegAvi } from '../utils/aviEncoder';
+import { valveUrl } from '../utils/exampleStudy';
 import {
   captureElementToCanvas,
   canvasToBlob,
@@ -2151,7 +2152,7 @@ const MPRViewer = () => {
       valveName: `Loading ${label}…`,
     }));
     try {
-      const response = await fetch(`/mpr/valves/${key}`);
+      const response = await fetch(valveUrl(key));
       if (!response.ok) throw new Error('That device could not be loaded.');
       const blob = await response.blob();
       const file = new File([blob], `${key}.stl`, { type: 'model/stl' });

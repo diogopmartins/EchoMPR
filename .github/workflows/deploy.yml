@@ -25,6 +25,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Add example studies and devices
+        run: |
+          base=https://github.com/diogopmartins/EchoMPR/releases/download/examples
+          mkdir -p build/examples build/valves
+          curl -fsSL -o build/examples/aov.dcm "$base/aov.dcm"
+          curl -fsSL -o build/examples/mv.dcm "$base/mv.dcm"
+          for key in sapien3-20 sapien3-23 sapien3-26 sapien3-29 sapien-m3 asd-15 asd-18 asd-21 asd-24 asd-27; do
+            curl -fsSL -o "build/valves/${key}.stl" "$base/${key}.stl"
+          done
       - uses: actions/upload-pages-artifact@v3
         with:
           path: build
