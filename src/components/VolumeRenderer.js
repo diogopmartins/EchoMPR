@@ -982,8 +982,8 @@ function CameraRig({ resetToken, onInteractive }) {
         -1,
         Math.min(1, prevBall.x * next.x + prevBall.y * next.y + prevBall.z * next.z)
       );
-      const angle = axisLen < 1e-6 ? 0 : Math.acos(adot);
-      if (angle < 1e-6 || axisLen < 1e-6) return;
+      const angle = axisLen < 1e-6 ? 0 : -Math.acos(adot);
+      if (Math.abs(angle) < 1e-6 || axisLen < 1e-6) return;
 
       camera.updateMatrixWorld();
       const m = camera.matrixWorld.elements;
