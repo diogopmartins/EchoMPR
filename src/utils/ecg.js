@@ -80,17 +80,85 @@ export function parseDicomWaveform(dataSet, arrayBuffer) {
         bytesPer === 2 ? view.getInt16(idx * 2, true) : view.getInt8(idx);
     }
 
+    const beats = detectRPeaks(samples, freq);
     return {
       source: 'dicom-waveform',
       label,
       samples,
       sampleHz: freq,
       durationMs: (nSamp / freq) * 1000,
-      beats: [],
-      heartRateBpm: readElementNumber(dataSet, 'x00181088'),
+      beats,
+      heartRateBpm: readElementNumber(dataSet, 'x00181088') || heartRateFromBeats(beats, freq),
     };
   }
   return null;
+}
+
+/** Centred moving average over `win` samples (prefix sums). */
+function movingAverage(x, win) {
+  const n = x.length;
+  const pre = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + x[i];
+  const half = Math.floor(win / 2);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.max(0, i - half);
+    const b = Math.min(n, i + half + 1);
+    out[i] = (pre[b] - pre[a]) / (b - a);
+  }
+  return out;
+}
+
+/**
+ * R-peak detection in the spirit of Pan & Tompkins (1985): baseline removed,
+ * squared slope integrated over ~120 ms, a threshold at 30% of the high
+ * (98th percentile) energy, and a 250 ms refractory period. In each QRS the
+ * peak is the largest deflection, so inverted leads work too.
+ * Returns sample indices.
+ */
+export function detectRPeaks(samples, sampleHz) {
+  const n = samples?.length || 0;
+  if (!sampleHz || n < sampleHz * 0.6) return [];
+  const win = (sec) => Math.max(1, Math.round(sec * sampleHz));
+  const base = movingAverage(samples, win(0.25));
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = samples[i] - base[i];
+  const slope = new Float32Array(n);
+  for (let i = 1; i < n; i++) slope[i] = (x[i] - x[i - 1]) ** 2;
+  const energy = movingAverage(slope, win(0.12));
+  const sorted = Float32Array.from(energy).sort();
+  const high = sorted[Math.floor(0.98 * (n - 1))];
+  if (!(high > 0)) return [];
+  const threshold = 0.3 * high;
+  const refractory = win(0.25);
+  const peaks = [];
+  let i = 0;
+  while (i < n) {
+    if (energy[i] < threshold) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < n && energy[j] >= threshold) j++;
+    const a = Math.max(0, i - win(0.08));
+    const b = Math.min(n - 1, j + win(0.02));
+    let best = a;
+    for (let k = a; k <= b; k++) if (Math.abs(x[k]) > Math.abs(x[best])) best = k;
+    const last = peaks.length - 1;
+    if (last < 0 || best - peaks[last] >= refractory) peaks.push(best);
+    else if (Math.abs(x[best]) > Math.abs(x[peaks[last]])) peaks[last] = best;
+    i = j;
+  }
+  return peaks;
+}
+
+/** Heart rate (bpm) from the median R–R interval, or null with fewer than 2 beats. */
+export function heartRateFromBeats(beats, sampleHz) {
+  if (!beats || beats.length < 2 || !sampleHz) return null;
+  const rr = [];
+  for (let i = 1; i < beats.length; i++) rr.push(beats[i] - beats[i - 1]);
+  rr.sort((a, b) => a - b);
+  return Math.round((60 * sampleHz) / rr[Math.floor(rr.length / 2)]);
 }
 
 export function extractEcg(dataSet, arrayBuffer) {

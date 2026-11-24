@@ -3,13 +3,16 @@
  * - height of the leaflet surface above the valve plane (prolapse map),
  * - per-cut leaflet traces with prolapse height, width and coaptation gap,
  * - orifice planimetry (MVA) and a rough "virtual clip" estimate,
- * - TEER measurements from points clicked in a cut.
+ * - TEER measurements from points clicked in a cut,
+ * - tenting (leaflets below the annulus) for functional regurgitation,
+ * - per-frame summaries over the cardiac cycle.
  *
  * The leaflet surface is found by walking along the valve axis from the
  * atrial side and taking the first voxel bright enough to be tissue (two
  * consecutive samples above the threshold, to ignore single speckles).
- * Heights are positive towards the atrium, relative to the plane the points
- * were picked in (the annulus plane when they were picked at annulus level).
+ * Heights are positive towards the atrium. They are relative to the plane the
+ * points were picked in, or, when the result carries `refHeight(q)` (see
+ * annulusFit.withAnnulus), to a fitted annulus plane or saddle surface.
  */
 import { add, dot, scale, spacingMm } from './mprGeometry';
 import { getVolumeAtTime } from './philipsVolume';
@@ -20,6 +23,13 @@ export const PROLAPSE_MM = 2;
 
 /** Search range along the valve axis, mm (atrial side, ventricular side). */
 const SEARCH = { atrial: 15, ventricular: 10, step: 0.25 };
+
+/**
+ * The leaflet search goes deeper on the ventricular side than the valve-level
+ * checks, so tethered leaflets (tenting up to ~14 mm) are still found. Tissue
+ * deeper than SEARCH.ventricular does not close a coaptation gap.
+ */
+const LEAFLET_DEPTH_MM = 14;
 
 /** Extra orifice closed on each side of the device by tissue approximation (mm). */
 export const CLIP_TISSUE_MARGIN_MM = 2;
@@ -133,9 +143,9 @@ export function estimateThreshold(sample, result) {
  * when walking from the atrial side along `down` through the plane point q.
  * null when no tissue is found in the search range.
  */
-export function leafletHeight(sample, q, down, threshold) {
+export function leafletHeight(sample, q, down, threshold, depthMm = LEAFLET_DEPTH_MM) {
   let prev = false;
-  for (let s = -SEARCH.atrial; s <= SEARCH.ventricular; s += SEARCH.step) {
+  for (let s = -SEARCH.atrial; s <= depthMm; s += SEARCH.step) {
     const hit = sample(add(q, scale(down, s))) >= threshold;
     if (hit && prev) return -(s - SEARCH.step);
     prev = hit;
@@ -143,9 +153,27 @@ export function leafletHeight(sample, q, down, threshold) {
   return null;
 }
 
+/** Height of the reference surface above the picked plane at q (mm, towards the atrium). */
+export function referenceAt(result, q) {
+  return result.refHeight ? result.refHeight(q) : 0;
+}
+
+/**
+ * Leaflet height at the plane point q relative to the result's reference
+ * surface: the search starts on the reference, so it covers the same range
+ * whatever the reference is. Returns { h, r } with r the reference height.
+ */
+function heightFromReference(sample, result, q, down, threshold) {
+  const r = referenceAt(result, q);
+  const h = leafletHeight(sample, r ? add(q, scale(down, -r)) : q, down, threshold);
+  return { h, r };
+}
+
 /**
  * Prolapse height map over the valve outline, on the key-map grid.
  * heights[i] is NaN outside the outline or where no leaflet was found.
+ * Leaflet below the reference counts as tenting: its volume is the space
+ * between the reference surface and the leaflets.
  */
 export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
   const frame = result.keyMap;
@@ -156,9 +184,15 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
   const heights = new Float32Array(width * height).fill(NaN);
   const segStats = {};
   result.segments.forEach((s) => {
-    segStats[s] = { maxHeight: null, prolapseAreaMm2: 0, areaMm2: 0 };
+    segStats[s] = { maxHeight: null, prolapseAreaMm2: 0, areaMm2: 0, maxTentingMm: 0, tentingVolumeMm3: 0 };
   });
   let maxHeight = null;
+  let maxTentingMm = 0;
+  let maxTentingAt = null;
+  let tentingVolumeMm3 = 0;
+  let tentingAreaMm2 = 0;
+  let foundAreaMm2 = 0;
+  let outlineAreaMm2 = 0;
   let maxAt = null;
   let maxSegment = null;
   let prolapseAreaMm2 = 0;
@@ -172,12 +206,26 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
     for (let i = 0; i < width; i++) {
       const x = frame.xMin + (i + 0.5) * mmPerPx;
       if (!pointInPolygon(poly, x, y)) continue;
+      outlineAreaMm2 += pxArea;
       const q = frameToWorld(frame, x, y);
       const seg = result.segmentAt(q);
       if (seg && segStats[seg]) segStats[seg].areaMm2 += pxArea;
-      const h = leafletHeight(sample, q, down, threshold);
+      const { h } = heightFromReference(sample, result, q, down, threshold);
       if (h == null) continue;
       heights[j * width + i] = h;
+      foundAreaMm2 += pxArea;
+      if (h < 0) {
+        tentingVolumeMm3 += -h * pxArea;
+        tentingAreaMm2 += pxArea;
+        if (-h > maxTentingMm) {
+          maxTentingMm = -h;
+          maxTentingAt = q;
+        }
+        if (seg && segStats[seg]) {
+          segStats[seg].tentingVolumeMm3 += -h * pxArea;
+          segStats[seg].maxTentingMm = Math.max(segStats[seg].maxTentingMm, -h);
+        }
+      }
       if (maxHeight == null || h > maxHeight) {
         maxHeight = h;
         maxAt = q;
@@ -207,6 +255,13 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
       maxSegment,
       prolapseAreaMm2,
       prolapseWidthMm: alongMax >= alongMin ? alongMax - alongMin + mmPerPx : 0,
+      maxTentingMm,
+      maxTentingAt,
+      tentingVolumeMm3,
+      tentingAreaMm2,
+      foundAreaMm2,
+      outlineAreaMm2,
+      reference: result.reference || 'picked',
       segments: segStats,
     },
   };
@@ -215,7 +270,11 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
 /**
  * Leaflet trace along one cut at valve level, inside the valve outline.
  * Returns the trace, the highest point, the width of the prolapsing run
- * around it and the coaptation gap (the run without tissue at the target).
+ * around it, the coaptation gap (the run without tissue at the target), and
+ * the tenting: the area between the reference and the leaflets below it, and
+ * the depth of the leaflets at the coaptation (within 3 mm of the target).
+ * Each trace point is { x, h, r }: h relative to the reference, r the
+ * reference height above the picked plane (the trace sits at y = −(h + r)).
  */
 export function cutProfile(sample, result, cut, threshold, step = 0.25) {
   const down = towardVentricle(result);
@@ -223,10 +282,20 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
   for (let x = cut.xMin; x <= cut.xMax; x += step) {
     const q = frameToWorld(cut, x, 0);
     if (!insideValve(result, q)) continue;
-    pts.push({ x, h: leafletHeight(sample, q, down, threshold) });
+    const { h, r } = heightFromReference(sample, result, q, down, threshold);
+    pts.push({ x, h, r });
   }
   if (!pts.length) {
-    return { points: [], maxHeight: null, maxX: null, maxLeaflet: null, prolapseWidthMm: 0, gapMm: 0 };
+    return {
+      points: [],
+      maxHeight: null,
+      maxX: null,
+      maxLeaflet: null,
+      prolapseWidthMm: 0,
+      gapMm: 0,
+      tentingAreaMm2: 0,
+      tentingHeightMm: null,
+    };
   }
   let best = -1;
   pts.forEach((p, i) => {
@@ -240,20 +309,29 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
     while (b < pts.length - 1 && pts[b + 1].h != null && pts[b + 1].h > PROLAPSE_MM) b++;
     prolapseWidthMm = (b - a + 1) * step;
   }
-  // Gap: the run of samples without tissue that contains the coaptation target.
+  // Gap: the run of samples without tissue at valve level that contains the
+  // coaptation target (deeper tissue, e.g. chordae, does not close it).
+  const open = (p) => p.h == null || p.h < -SEARCH.ventricular;
   let k = 0;
   pts.forEach((p, i) => {
     if (Math.abs(p.x - cut.target.x) < Math.abs(pts[k].x - cut.target.x)) k = i;
   });
   let gapMm = 0;
-  if (pts[k].h == null) {
+  if (open(pts[k])) {
     let a = k;
     let b = k;
-    while (a > 0 && pts[a - 1].h == null) a--;
-    while (b < pts.length - 1 && pts[b + 1].h == null) b++;
+    while (a > 0 && open(pts[a - 1])) a--;
+    while (b < pts.length - 1 && open(pts[b + 1])) b++;
     // A run that reaches the edge of the outline is not bounded by two leaflets.
     if (a > 0 && b < pts.length - 1) gapMm = (b - a + 1) * step;
   }
+  let tentingAreaMm2 = 0;
+  let deepest = null;
+  pts.forEach((p) => {
+    if (p.h == null) return;
+    if (p.h < 0) tentingAreaMm2 += -p.h * step;
+    if (Math.abs(p.x - cut.target.x) <= 3 && (deepest == null || p.h < deepest)) deepest = p.h;
+  });
   const maxX = best >= 0 ? pts[best].x : null;
   return {
     points: pts,
@@ -262,6 +340,8 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
     maxLeaflet: maxX == null ? null : maxX < cut.target.x ? cut.leaflets.left : cut.leaflets.right,
     prolapseWidthMm,
     gapMm,
+    tentingAreaMm2,
+    tentingHeightMm: deepest == null || gapMm > 0 ? null : Math.max(0, -deepest),
   };
 }
 
@@ -270,7 +350,13 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
  * ventricle, flood-fill the blood region around the seed inside the valve
  * outline; regions that reach the outline are not enclosed by leaflets and
  * are skipped. The smallest enclosed area over depth is the orifice at the
- * leaflet tips. Returns null when no enclosed orifice is found.
+ * leaflet tips. An enclosed region only counts when, going deeper, it carries
+ * on (overlapping from one depth to the next) until it opens into the
+ * ventricle: the funnel of a closed, tented valve is enclosed too, but it
+ * ends in the leaflets. With an annulus reference (saddle) the sections
+ * follow that surface instead of flat planes, so a saddle-shaped valve can
+ * seal them. Depths are below the reference.
+ * Returns null when no enclosed orifice is found.
  */
 export function orificeAt(sample, result, threshold, seedWorld, { mmPerPx = 0.4, maxDepthMm = 15 } = {}) {
   const frame = result.keyMap;
@@ -288,18 +374,25 @@ export function orificeAt(sample, result, threshold, seedWorld, { mmPerPx = 0.4,
     for (let i = 0; i < w; i++) {
       const x = x0 + i * mmPerPx;
       const y = y0 + j * mmPerPx;
-      coords.push({ x, y });
-      if (pointInPolygon(poly, x, y)) inside[j * w + i] = 1;
+      const k = j * w + i;
+      coords.push({ x, y, q: null });
+      if (pointInPolygon(poly, x, y)) {
+        inside[k] = 1;
+        const q = frameToWorld(frame, x, y);
+        // Point on the reference surface above this pixel
+        coords[k].q = add(q, scale(down, -referenceAt(result, q)));
+      }
     }
   }
   const seedF = worldToFrame(frame, seedWorld);
-  let best = null;
+  // State per depth: 'closed' (tissue across the seed or a sliver of blood),
+  // 'open' (the blood reaches the outline) or 'enclosed', with the region.
+  const states = [];
   for (let d = -2; d <= maxDepthMm; d += 0.5) {
     const dark = new Uint8Array(w * h);
     for (let k = 0; k < w * h; k++) {
       if (!inside[k]) continue;
-      const q = add(frameToWorld(frame, coords[k].x, coords[k].y), scale(down, d));
-      if (sample(q) < threshold) dark[k] = 1;
+      if (sample(add(coords[k].q, scale(down, d))) < threshold) dark[k] = 1;
     }
     // Seed: nearest dark pixel to the valve centre, within 4 mm.
     let seed = -1;
@@ -312,7 +405,10 @@ export function orificeAt(sample, result, threshold, seedWorld, { mmPerPx = 0.4,
         seed = k;
       }
     }
-    if (seed < 0) continue;
+    if (seed < 0) {
+      states.push('closed');
+      continue;
+    }
     const mask = new Uint8Array(w * h);
     const queue = [seed];
     mask[seed] = 1;
@@ -340,10 +436,34 @@ export function orificeAt(sample, result, threshold, seedWorld, { mmPerPx = 0.4,
         }
       }
     }
-    if (leaked) continue;
+    if (leaked) {
+      states.push({ kind: 'open', mask });
+      continue;
+    }
     const areaMm2 = count * mmPerPx * mmPerPx;
-    if (areaMm2 < 3) continue;
-    if (!best || areaMm2 < best.areaMm2) best = { areaMm2, depthMm: d, mask, grid: { x0, y0, w, h, mmPerPx } };
+    if (areaMm2 < 3) states.push('closed');
+    else states.push({ kind: 'enclosed', count, mask, areaMm2, depthMm: d, grid: { x0, y0, w, h, mmPerPx } });
+  }
+  let best = null;
+  let below = null; // region at the next depth that leads into the ventricle
+  for (let i = states.length - 1; i >= 0; i--) {
+    const st = states[i];
+    if (st === 'closed') {
+      below = null;
+    } else if (st.kind === 'open') {
+      below = st.mask;
+    } else {
+      let common = 0;
+      if (below) for (let k = 0; k < st.mask.length; k++) if (st.mask[k] && below[k]) common++;
+      if (common >= 0.5 * st.count) {
+        below = st.mask;
+        if (!best || st.areaMm2 < best.areaMm2) {
+          best = { areaMm2: st.areaMm2, depthMm: st.depthMm, mask: st.mask, grid: st.grid };
+        }
+      } else {
+        below = null;
+      }
+    }
   }
   return best;
 }
@@ -470,3 +590,89 @@ export function teerCriteria({ measures: measuresIn, flailWidthMm = null, mvaMm2
   ];
 }
 
+
+/** Point the orifice flood fill starts from (the coaptation centre). */
+export function orificeSeed(result) {
+  return result.kind === 'mv' ? result.projected.mid : result.projected.c;
+}
+
+/**
+ * Summary of one frame for the cycle charts: the highest leaflet point, the
+ * widest coaptation gap over the cuts, the tenting, and the orifice area.
+ * A 1 mm height grid keeps a whole cycle quick.
+ */
+export function frameMetrics(sample, result, threshold, { mmPerPx = 1, withOrifice = true } = {}) {
+  const map = heightMap(sample, result, threshold, mmPerPx);
+  const profiles = result.cuts.map((cut) => cutProfile(sample, result, cut, threshold, 0.5));
+  let gapMm = 0;
+  let gapCut = null;
+  profiles.forEach((p, i) => {
+    if (p.gapMm > gapMm) {
+      gapMm = p.gapMm;
+      gapCut = result.cuts[i].index;
+    }
+  });
+  const orifice = withOrifice ? orificeAt(sample, result, threshold, orificeSeed(result)) : null;
+  const st = map.stats;
+  return {
+    threshold,
+    maxHeightMm: st.maxHeight,
+    maxSegment: st.maxSegment,
+    prolapseAreaMm2: st.prolapseAreaMm2,
+    gapMm,
+    gapCut,
+    maxTentingMm: st.maxTentingMm,
+    tentingVolumeMm3: st.tentingVolumeMm3,
+    orificeMm2: orifice ? orifice.areaMm2 : null,
+    orifice,
+    // Share of the valve area where a leaflet was found: close to 1 when the
+    // valve is closed, lower when the orifice is open.
+    coverage: st.outlineAreaMm2 > 0 ? st.foundAreaMm2 / st.outlineAreaMm2 : 0,
+  };
+}
+
+/**
+ * A frame counts as closed when its leaflet coverage is near the best of the
+ * cycle, and it has no orifice comparable with the largest of the cycle
+ * (once that one is big enough to be a diastolic orifice).
+ */
+export const CLOSED_COVERAGE = 0.85;
+const OPEN_ORIFICE_SHARE = 0.4;
+const DIASTOLIC_ORIFICE_MM2 = 100;
+
+/** The frame with the largest value of a metric, or null when it never applies. */
+function argMax(frames, key, min = -Infinity, use = null) {
+  let best = null;
+  frames.forEach((m, t) => {
+    const v = m?.[key];
+    if ((use && !use[t]) || v == null || !(v > min)) return;
+    if (best == null || v > frames[best][key]) best = t;
+  });
+  return best;
+}
+
+/**
+ * Frames worth jumping to after a cycle analysis: the worst prolapse and the
+ * widest gap (systole in degenerative MR), the most tenting (systole in
+ * functional MR/TR) and the largest orifice (diastole). The systolic ones are
+ * looked for in closed frames only (an open orifice reads as a gap, and open
+ * leaflets as tenting); the orifice in open frames only (a regurgitant gap is
+ * not the MVA). `closed[t]` says how each frame was classed.
+ */
+export function cycleJumps(frames) {
+  const best = Math.max(0, ...frames.map((m) => m?.coverage || 0));
+  const maxOrifice = Math.max(0, ...frames.map((m) => m?.orificeMm2 || 0));
+  const bigOrifice = (m) =>
+    maxOrifice >= DIASTOLIC_ORIFICE_MM2 && (m.orificeMm2 || 0) >= OPEN_ORIFICE_SHARE * maxOrifice;
+  const closed = frames.map(
+    (m) => Boolean(m) && best > 0 && m.coverage >= CLOSED_COVERAGE * best && !bigOrifice(m)
+  );
+  const open = closed.map((c) => !c);
+  return {
+    closed,
+    maxProlapse: argMax(frames, 'maxHeightMm', -Infinity, closed),
+    widestGap: argMax(frames, 'gapMm', 0, closed),
+    maxTenting: argMax(frames, 'tentingVolumeMm3', 0, closed),
+    largestOrifice: argMax(frames, 'orificeMm2', 0, open),
+  };
+}
