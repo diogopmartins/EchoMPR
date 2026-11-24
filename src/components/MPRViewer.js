@@ -1823,14 +1823,17 @@ function EcgStrip({ ecg, timeIndex, frameCount, onSeek }) {
   );
 }
 
+// Fixed 3D lighting.
+const LIGHT_AZIMUTH = 38;
+const LIGHT_ELEVATION = 42;
+const LIGHT_INTENSITY = 1.55;
+
 const MPRViewer = () => {
   const {
     volume,
     currentImage,
     timeIndex,
     setTimeIndex,
-    crosshair,
-    setCrosshair,
     mprCenter,
     mprBasis,
     setMprCenter,
@@ -1838,7 +1841,6 @@ const MPRViewer = () => {
     resetMprOrientation,
     windowCenter,
     windowWidth,
-    setWindowLevel,
   } = useEcho();
 
   const [playing, setPlaying] = useState(false);
@@ -1850,9 +1852,6 @@ const MPRViewer = () => {
   const [cropPlaneKey, setCropPlaneKey] = useState('z');
   const [cropFlip, setCropFlip] = useState(false);
   const [showMprLines, setShowMprLines] = useState(true);
-  const [lightAzimuth, setLightAzimuth] = useState(38);
-  const [lightElevation, setLightElevation] = useState(42);
-  const [lightIntensity, setLightIntensity] = useState(1.55);
   const [zoom, setZoom] = useState(1.5);
   const [slabMm, setSlabMm] = useState(0);
   const [slabMode, setSlabMode] = useState('mean');
@@ -2334,39 +2333,6 @@ const MPRViewer = () => {
           open={openSections.planes}
           onToggle={() => toggleSection('planes')}
         >
-          <SliderRow>
-            <Label style={{ color: AXIS_META.sagittal.color }}>X {crosshair.x}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.x - 1}
-              value={crosshair.x}
-              onChange={(e) => setCrosshair({ x: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.sagittal.color }}
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label style={{ color: AXIS_META.coronal.color }}>Y {crosshair.y}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.y - 1}
-              value={crosshair.y}
-              onChange={(e) => setCrosshair({ y: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.coronal.color }}
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label style={{ color: AXIS_META.axial.color }}>Z {crosshair.z}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.z - 1}
-              value={crosshair.z}
-              onChange={(e) => setCrosshair({ z: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.axial.color }}
-            />
-          </SliderRow>
           <Button
             $grow
             onClick={() => {
@@ -2727,52 +2693,6 @@ const MPRViewer = () => {
         </SidebarSection>
 
         <SidebarSection
-          title="Image"
-          open={openSections.image}
-          onToggle={() => toggleSection('image')}
-        >
-          <SliderRow>
-            <Label $wide="3.6rem">WC {windowCenter}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={255}
-              value={windowCenter}
-              onChange={(e) =>
-                setWindowLevel({ windowCenter: Number(e.target.value) })
-              }
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label $wide="3.6rem">WW {windowWidth}</Label>
-            <Slider
-              type="range"
-              min={1}
-              max={255}
-              value={windowWidth}
-              onChange={(e) =>
-                setWindowLevel({ windowWidth: Number(e.target.value) })
-              }
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label $wide="4.5rem">Zoom {Math.round(zoom * 100)}%</Label>
-            <Slider
-              type="range"
-              min={0.4}
-              max={4}
-              step={0.05}
-              value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
-              title="MPR zoom"
-            />
-          </SliderRow>
-          <Button $grow onClick={() => setZoom(1.35)} title="Fit default zoom">
-            Fit
-          </Button>
-        </SidebarSection>
-
-        <SidebarSection
           title="Volume"
           open={openSections.volume}
           onToggle={() => toggleSection('volume')}
@@ -2874,40 +2794,6 @@ const MPRViewer = () => {
             <RotateCcw size={14} />
             Reset 3D
           </Button>
-          <SliderRow>
-            <Label>az</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={360}
-              value={lightAzimuth}
-              onChange={(e) => setLightAzimuth(Number(e.target.value))}
-              title="Light azimuth"
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label>el</Label>
-            <Slider
-              type="range"
-              min={-80}
-              max={80}
-              value={lightElevation}
-              onChange={(e) => setLightElevation(Number(e.target.value))}
-              title="Light elevation"
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label>int</Label>
-            <Slider
-              type="range"
-              min={0.2}
-              max={2}
-              step={0.05}
-              value={lightIntensity}
-              onChange={(e) => setLightIntensity(Number(e.target.value))}
-              title="Light intensity"
-            />
-          </SliderRow>
         </SidebarSection>
 
         <SidebarSection
@@ -3119,9 +3005,9 @@ const MPRViewer = () => {
               showMprLines={showMprLines}
               mprCenter={mprCenter}
               mprBasis={mprBasis}
-              lightAzimuth={lightAzimuth}
-              lightElevation={lightElevation}
-              lightIntensity={lightIntensity}
+              lightAzimuth={LIGHT_AZIMUTH}
+              lightElevation={LIGHT_ELEVATION}
+              lightIntensity={LIGHT_INTENSITY}
               measurements={measurements}
               selectedMeasurementId={selectedMeasurementId}
               liveDraft={liveDraft}
