@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { renderSliceToCanvas } from '../../utils/philipsVolume';
-import { MIN_ANNULUS_POINTS, aortoMitralAngle, fitAnnulus, withAnnulus } from '../../utils/annulusFit';
+import { aortoMitralAngle } from '../../utils/annulusFit';
 import { getVolumeEcg, sampleIndexToFrame } from '../../utils/ecg';
-import { cross, dot, normalize, scale, sub } from '../../utils/mprGeometry';
+import { cross, dot, normalize, sub } from '../../utils/mprGeometry';
 import { frameToPixel, frameToWorld, pixelToFrame, sampleFrame, worldToFrame } from '../../utils/mvSlicer';
 import {
   PROLAPSE_MM,
@@ -189,7 +189,6 @@ const AORTIC_COLOR = '#e57373';
 const TENT_FILL = 'rgba(66, 135, 245, 0.35)';
 /** Hinges this close to a cut's plane are drawn in it (mm). */
 const ON_PLANE_MM = 1;
-const MIN_ANNULUS_CUTS = 3;
 
 /** Points (world mm) lying in a cut's plane, in the cut's coordinates. */
 function inCut(cut, items, getPoint) {
@@ -445,25 +444,15 @@ export default function SlicerView({
   const [clipCut, setClipCut] = useState(defaultCut);
 
   // ---- 3D annulus from the hinges, and the result the analysis sees
-  const down = result.kind === 'tv' ? result.raToRv : result.laToLv;
-  const tracedCuts = useMemo(() => {
-    const per = {};
-    hinges.forEach((h) => {
-      per[h.cut] = (per[h.cut] || 0) + 1;
-    });
-    return Object.keys(per).filter((k) => per[k] === 2).length;
-  }, [hinges]);
-  const fit = useMemo(() => {
-    if (hinges.length < MIN_ANNULUS_POINTS || tracedCuts < MIN_ANNULUS_CUTS) return null;
-    const directions = result.kind === 'mv' ? { cc: result.chord, ap: result.anterior } : {};
-    return fitAnnulus(
-      hinges.map((h) => h.p),
-      { up: scale(down, -1), directions }
-    );
-  }, [hinges, tracedCuts, result, down]);
-  const reference = fit ? slicer.reference : 'picked';
-  const analysisResult = useMemo(() => withAnnulus(result, fit, reference), [result, fit, reference]);
-  const analysis = useValveAnalysis({ volume, timeIndex, result: analysisResult });
+  const { fit, tracedCuts, analysisResult } = slicer;
+  const reference = slicer.effectiveReference;
+  const analysis = useValveAnalysis({
+    volume,
+    timeIndex,
+    result: analysisResult,
+    thresholdOverride: slicer.thresholdOverride,
+    setThresholdOverride: slicer.setThresholdOverride,
+  });
 
   // ---- Aorto-mitral angle: aortic hinges and the mitral hinges of the same cut
   const aorticCutObj = aortic ? result.cuts.find((c) => c.index === aortic.cut) : null;

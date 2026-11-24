@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
+import { MIN_ANNULUS_POINTS, fitAnnulus, withAnnulus } from '../../utils/annulusFit';
+import { scale } from '../../utils/mprGeometry';
 import { moveKeepingDepth } from '../../utils/mvSlicer';
+
+/** Cuts with both hinges needed before the annulus is fitted. */
+export const MIN_ANNULUS_CUTS = 3;
 
 /**
  * State of a valve slicer (MV or TV): the picked points, the normal of the
  * view they were picked in, display options, whether the cut view is open,
- * and the annulus traced in the cuts. Annulus hinges are kept in world mm, so
- * they stay valid when the points are adjusted and the cuts move.
+ * the annulus traced in the cuts, the tissue threshold, and whether the 3D
+ * leaflet model is shown. Annulus hinges are kept in world mm, so they stay
+ * valid when the points are adjusted and the cuts move. `analysisResult` is
+ * the result as the leaflet analysis sees it (traced annulus as outline and
+ * height reference), shared by the cut view and the 3D model.
  *
  * @param {{volume, pointDefs: {key,label,short,color}[], build: Function}} config
  *   `build(points, viewNormal, options)` returns the slicer result.
@@ -22,6 +30,8 @@ export default function useValveSlicer({ volume, pointDefs, build }) {
   // Aortic annulus hinges in one cut (MV): { cut, t, pts: [p1, p2] }
   const [aortic, setAortic] = useState(null);
   const [reference, setReference] = useState('saddle');
+  const [thresholdOverride, setThresholdOverride] = useState(null);
+  const [showModel, setShowModel] = useState(true);
 
   useEffect(() => {
     setPoints({});
@@ -29,6 +39,7 @@ export default function useValveSlicer({ volume, pointDefs, build }) {
     setOpen(false);
     setHinges([]);
     setAortic(null);
+    setThresholdOverride(null);
   }, [volume]);
 
   const next = pointDefs.find((p) => !points[p.key]) || null;
@@ -38,6 +49,29 @@ export default function useValveSlicer({ volume, pointDefs, build }) {
   const result = useMemo(
     () => (next ? null : build(points, viewNormal, options)),
     [next, points, viewNormal, options, build]
+  );
+
+  // ---- 3D annulus from the hinges, and the result the analysis sees
+  const tracedCuts = useMemo(() => {
+    const per = {};
+    hinges.forEach((h) => {
+      per[h.cut] = (per[h.cut] || 0) + 1;
+    });
+    return Object.keys(per).filter((k) => per[k] === 2).length;
+  }, [hinges]);
+  const fit = useMemo(() => {
+    if (!result?.ok || hinges.length < MIN_ANNULUS_POINTS || tracedCuts < MIN_ANNULUS_CUTS) return null;
+    const down = result.kind === 'tv' ? result.raToRv : result.laToLv;
+    const directions = result.kind === 'mv' ? { cc: result.chord, ap: result.anterior } : {};
+    return fitAnnulus(
+      hinges.map((h) => h.p),
+      { up: scale(down, -1), directions }
+    );
+  }, [hinges, tracedCuts, result]);
+  const effectiveReference = fit ? reference : 'picked';
+  const analysisResult = useMemo(
+    () => (result?.ok ? withAnnulus(result, fit, effectiveReference) : null),
+    [result, fit, effectiveReference]
   );
 
   /** Place the next point; returns true when that was the last one. */
@@ -123,5 +157,13 @@ export default function useValveSlicer({ volume, pointDefs, build }) {
     setAortic,
     reference,
     setReference,
+    effectiveReference,
+    tracedCuts,
+    fit,
+    analysisResult,
+    thresholdOverride,
+    setThresholdOverride,
+    showModel,
+    setShowModel,
   };
 }

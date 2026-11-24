@@ -16,8 +16,7 @@ import {
  * measured (a frame at a time, so the page stays responsive); the largest
  * orifice over the cycle is the MVA.
  */
-export default function useValveAnalysis({ volume, timeIndex, result }) {
-  const [thresholdOverride, setThresholdOverride] = useState(null);
+export default function useValveAnalysis({ volume, timeIndex, result, thresholdOverride, setThresholdOverride }) {
   const [cycle, setCycle] = useState(null);
   const [progress, setProgress] = useState(null);
   const runRef = useRef(0);
@@ -28,10 +27,6 @@ export default function useValveAnalysis({ volume, timeIndex, result }) {
     setCycle(null);
     setProgress(null);
   }, [volume, result, thresholdOverride]);
-
-  useEffect(() => {
-    setThresholdOverride(null);
-  }, [volume]);
 
   useEffect(
     () => () => {

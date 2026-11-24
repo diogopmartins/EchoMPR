@@ -13,6 +13,7 @@ Browser-based **multi-planar reconstruction (MPR)** and 3D volume viewing for **
 - TV slicer: cuts across each tricuspid coaptation line, with prolapse and coaptation-gap measurements
 - 3D annulus traced in the slicer cuts (saddle shape, area, perimeter, diameters, AHCWR, aorto-mitral angle), used as the reference for leaflet heights
 - Tenting (height, area, volume) for functional MR/TR, and a cycle analysis that charts every frame and jumps to the worst one
+- 3D leaflet model in the 3D view: leaflets coloured by height, annulus, coaptation line and segment labels, with surgical and ventricular views
 - No server: files never leave the browser
 
 ## Supported data
@@ -101,6 +102,16 @@ Leaflet below the reference counts as tenting, shaded blue in the cuts and the m
 - **ECG:** R waves are detected in the DICOM waveform (Pan–Tompkins style: slope energy, adaptive threshold, 250 ms refractory period). They are marked on the ECG strip and the charts, and give the heart rate when the file does not.
 
 The points and the annulus are fixed; they do not follow the valve through the cycle.
+
+### 3D leaflet model
+
+Once the points are picked, the 3D view (bottom right of the MPR layout) shows a model of the leaflets for the current frame. It follows the cine and the chosen height reference.
+
+- **Leaflets:** the atrial surface found by the height map (0.5 mm grid, lightly smoothed), coloured with the same scale as the prolapse map. Blue is below the reference (tenting), red above (prolapse). Steep jumps are left open, so gaps and the open orifice show as holes.
+- **Annulus:** the traced 3D annulus in yellow, or the estimated outline (dashed grey) before tracing.
+- **Labels:** the coaptation line (white), AL, PM, the coaptation centre, the AoV, and the segments A1–P3 (A, S and P for the TV).
+- **Views:** **Surgical view** looks from the LA with the AoV at 12 o’clock, as in the key map; **From LV** looks from the ventricle. For the TV the buttons read **From RA** and **From RV**. **Model only** hides the volume rendering. The model is built once per frame and then cached.
+- **Hide 3D leaflet model** in the MV or TV slicer section turns it off.
 
 ## TV slicer
 

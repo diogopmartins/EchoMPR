@@ -409,6 +409,19 @@ export function mmToUnitBox(volume, mm) {
   ];
 }
 
+/**
+ * Volume-local mm → 3D scene coordinates: the unit box scaled to the
+ * volume's physical aspect (as the volume renderer draws it). The mapping is
+ * a uniform scale plus a shift, so directions in mm are directions in the scene.
+ */
+export function mmToScene(volume, mm) {
+  const u = mmToUnitBox(volume, mm);
+  const s = spacingMm(volume);
+  const size = [volume.dims.x * s.x, volume.dims.y * s.y, volume.dims.z * s.z];
+  const maxDim = Math.max(...size);
+  return u.map((v, i) => (v * size[i]) / maxDim);
+}
+
 /** Planar polygon area (mm²) using the slice's in-plane axes. */
 export function polygonAreaMm2(points, right, down) {
   if (!points || points.length < 3) return 0;

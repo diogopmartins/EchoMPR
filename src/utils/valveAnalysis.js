@@ -163,7 +163,7 @@ export function referenceAt(result, q) {
  * surface: the search starts on the reference, so it covers the same range
  * whatever the reference is. Returns { h, r } with r the reference height.
  */
-function heightFromReference(sample, result, q, down, threshold) {
+export function heightFromReference(sample, result, q, down, threshold) {
   const r = referenceAt(result, q);
   const h = leafletHeight(sample, r ? add(q, scale(down, -r)) : q, down, threshold);
   return { h, r };

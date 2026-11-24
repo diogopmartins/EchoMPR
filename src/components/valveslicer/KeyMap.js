@@ -8,6 +8,7 @@ import {
   worldToFrame,
 } from '../../utils/mvSlicer';
 import { CUT_COLOR, labelAnchor, labelEnd } from './drawSlicerOverlay';
+import { HEIGHT_RANGE, heightColor, heightGradientCss } from '../../utils/heightColors';
 
 export const KEY_PX = 260;
 export const KEY_SLAB_MM = 10;
@@ -15,35 +16,7 @@ export const KEY_SLAB_MM = 10;
 /** Grab radius for the point handles and lines, in CSS pixels. */
 const HIT_CSS_PX = 11;
 
-/** Height colour scale (mm above the valve plane, towards the atrium). */
-const STOPS = [
-  [-4, [66, 135, 245]],
-  [0, [225, 225, 225]],
-  [2, [255, 235, 59]],
-  [6, [244, 67, 54]],
-  [10, [156, 39, 176]],
-];
-export const HEIGHT_RANGE = [STOPS[0][0], STOPS[STOPS.length - 1][0]];
-
-export function heightColor(h) {
-  if (h <= STOPS[0][0]) return STOPS[0][1];
-  for (let i = 1; i < STOPS.length; i++) {
-    const [h1, c1] = STOPS[i];
-    if (h <= h1) {
-      const [h0, c0] = STOPS[i - 1];
-      const f = (h - h0) / (h1 - h0);
-      return c0.map((v, k) => Math.round(v + f * (c1[k] - v)));
-    }
-  }
-  return STOPS[STOPS.length - 1][1];
-}
-
-/** CSS gradient matching heightColor over HEIGHT_RANGE. */
-export function heightGradientCss() {
-  const [lo, hi] = HEIGHT_RANGE;
-  const stops = STOPS.map(([h, c]) => `rgb(${c.join(',')}) ${(((h - lo) / (hi - lo)) * 100).toFixed(1)}%`);
-  return `linear-gradient(to right, ${stops.join(', ')})`;
-}
+export { HEIGHT_RANGE, heightColor, heightGradientCss };
 
 function distToSegment(x, y, a, b) {
   const vx = b.x - a.x;
