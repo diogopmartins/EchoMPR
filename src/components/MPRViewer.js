@@ -60,6 +60,10 @@ import {
 import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
 import { encodeMjpegAvi } from '../utils/aviEncoder';
 import { valveUrl } from '../utils/exampleStudy';
+import { MV_POINTS } from '../utils/mvSlicer';
+import useMvSlicer from './mvslicer/useMvSlicer';
+import drawMvOverlay from './mvslicer/drawMvOverlay';
+import MvSlicerView from './mvslicer/MvSlicerView';
 import {
   captureElementToCanvas,
   canvasToBlob,
@@ -319,6 +323,24 @@ const MeasureMetaLine = styled.span`
   color: #c8c8c8;
 `;
 
+const MvSteps = styled.ol`
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+`;
+
+const MvStep = styled.li`
+  font-size: 0.75rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  color: ${(p) => (p.$done ? '#4caf50' : p.$current ? '#ffffff' : '#c8c8c8')};
+  background: ${(p) => (p.$current ? 'rgba(76, 175, 80, 0.25)' : 'transparent')};
+  border: 1px solid ${(p) => (p.$current ? '#4caf50' : 'transparent')};
+`;
+
 const MeasureDelete = styled.span`
   display: inline-flex;
   align-items: center;
@@ -488,6 +510,7 @@ const DEVICE_MODELS = {
 
 const DEFAULT_SECTIONS = {
   cine: true,
+  mvslicer: true,
   tools: true,
   measure: true,
   planes: true,
@@ -754,6 +777,9 @@ function MPRSlicePane({
   onAnchorPlace,
   onAnchorPoint,
   onAnchorCommit,
+  mvSlicer = null,
+  mvNext = null,
+  onMvPoint,
 }) {
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
@@ -969,6 +995,19 @@ function MPRSlicePane({
         else drawArea(draft.points, draft.cursor, true);
       }
 
+      if (mvSlicer) {
+        const sp = volume.spacingCm;
+        drawMvOverlay(ctx, mvSlicer, {
+          toCssMm: (mm) => {
+            const im = worldMmToImage(volume, s, mm);
+            return toCss(im.u, im.v);
+          },
+          planePoint: voxelToMm(volume, mprCenter),
+          planeNormal: mprBasis[viewSpec(axis).normalKey],
+          tolMm: Math.max(sp.x, sp.y, sp.z) * 15,
+        });
+      }
+
       if (valvePose && (valvePositions || profilePositions)) {
         const frames = valveFrames(volume, mprCenter, mprBasis, valvePose);
         const spec = viewSpec(axis);
@@ -1051,6 +1090,7 @@ function MPRSlicePane({
       valvePose,
       valvePositions,
       volume,
+      mvSlicer,
     ]
   );
 
@@ -1211,7 +1251,7 @@ function MPRSlicePane({
 
   const hitMeasurement = (pos) => {
     const slice = sliceRef.current;
-    if (!slice || !pos || draftRef.current) return null;
+    if (!slice || !pos || draftRef.current || tool === 'mvslicer') return null;
     const vis = visibleMeasurements();
     let bestPt = null;
     let bestPtD = 10;
@@ -1336,6 +1376,15 @@ function MPRSlicePane({
         angle0: Math.atan2(dotVec(rel, axes.down), dotVec(rel, axes.right)),
       };
       e.currentTarget.style.cursor = spinning ? 'grabbing' : 'move';
+      return;
+    }
+
+    if (tool === 'mvslicer') {
+      clickStartRef.current.consumed = true;
+      onMvPoint?.(
+        imageToWorldMm(volume, slice, pos.imgU, pos.imgV),
+        basisRef.current[viewSpec(axis).normalKey]
+      );
       return;
     }
 
@@ -1492,6 +1541,11 @@ function MPRSlicePane({
       return;
     }
 
+    if (tool === 'mvslicer') {
+      e.currentTarget.style.cursor = 'crosshair';
+      return;
+    }
+
     if (tool !== 'navigate' && tool !== 'valve') {
       const hover = hitMeasurement(pos);
       e.currentTarget.style.cursor = hover ? 'grab' : 'crosshair';
@@ -1609,7 +1663,11 @@ function MPRSlicePane({
 
   const planeColor = AXIS_META[axis].color;
   const hint =
-    tool === 'distance'
+    tool === 'mvslicer'
+      ? mvNext
+        ? `MV slicer: click the ${mvNext.label} (an en-face view of the valve works best)`
+        : 'MV slicer: all points placed'
+      : tool === 'distance'
       ? 'Click two points to measure length · Drag points to edit'
       : tool === 'area'
         ? 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel'
@@ -1885,6 +1943,7 @@ const MPRViewer = () => {
   const [liveDraft, setLiveDraft] = useState(null);
   const [clearDraftSignal, setClearDraftSignal] = useState(0);
   const [maximizedPane, setMaximizedPane] = useState(null);
+  const mv = useMvSlicer({ volume });
   const [cameraResetToken, setCameraResetToken] = useState(0);
   const [exporting, setExporting] = useState(null);
   const [openSections, setOpenSections] = useState(DEFAULT_SECTIONS);
@@ -2326,6 +2385,84 @@ const MPRViewer = () => {
           <MeasureMetaLine>
             Space play/pause · ← → {playing ? 'speed' : 'frame'}
           </MeasureMetaLine>
+        </SidebarSection>
+
+        <SidebarSection
+          title="MV slicer"
+          open={openSections.mvslicer}
+          onToggle={() => toggleSection('mvslicer')}
+        >
+          <MeasureMetaLine>
+            Tilt the planes to an en-face view of the mitral valve at the annulus level, then click:
+          </MeasureMetaLine>
+          <MvSteps>
+            {MV_POINTS.map((p, i) => (
+              <MvStep
+                key={p.key}
+                $done={Boolean(mv.points[p.key])}
+                $current={tool === 'mvslicer' && mv.next?.key === p.key}
+              >
+                {mv.points[p.key] ? '✓' : `${i + 1}.`} {p.label}
+              </MvStep>
+            ))}
+          </MvSteps>
+          <ButtonRow>
+            <Button
+              $grow
+              $active={tool === 'mvslicer'}
+              onClick={() => {
+                if (mv.complete) mv.clear();
+                mv.setOpen(false);
+                setTool('mvslicer');
+              }}
+              title="Click the four points in a 2D view"
+            >
+              {mv.placedCount && !mv.complete ? 'Continue' : 'Pick points'}
+            </Button>
+            <Button $grow onClick={mv.undo} disabled={!mv.placedCount} title="Remove the last point">
+              Undo
+            </Button>
+            <Button
+              $grow
+              onClick={() => {
+                mv.clear();
+                if (tool === 'mvslicer') setTool('navigate');
+              }}
+              disabled={!mv.placedCount}
+              title="Remove all four points"
+            >
+              Clear
+            </Button>
+          </ButtonRow>
+          <SliderRow>
+            <Label $wide="3.2rem">Cuts</Label>
+            <Select
+              value={mv.mode}
+              onChange={(e) => mv.setMode(e.target.value)}
+              title="How the nine cuts are laid out"
+            >
+              <option value="fan">Fan through the AoV</option>
+              <option value="parallel">Parallel</option>
+            </Select>
+          </SliderRow>
+          <Button
+            $grow
+            $active={mv.open}
+            disabled={!mv.result?.ok}
+            onClick={() => mv.setOpen(!mv.open)}
+            title="Show the nine cuts across the valve"
+          >
+            {mv.open ? 'Back to MPR' : 'Show 9 cuts'}
+          </Button>
+          {mv.result && !mv.result.ok ? (
+            <MeasureMetaLine style={{ color: '#e57373' }}>{mv.result.error}</MeasureMetaLine>
+          ) : null}
+          {mv.result?.ok ? (
+            <MeasureMetaLine>
+              Cuts {mv.result.spacingMm.toFixed(1)} mm apart along a{' '}
+              {mv.result.coaptationLengthMm.toFixed(0)} mm coaptation line
+            </MeasureMetaLine>
+          ) : null}
         </SidebarSection>
 
         <SidebarSection
@@ -2879,6 +3016,14 @@ const MPRViewer = () => {
             onAnchorPlace={placeAnchor}
             onAnchorPoint={moveAnchorPoint}
             onAnchorCommit={commitTrack}
+            mvSlicer={mv.overlay}
+            mvNext={mv.next}
+            onMvPoint={(mm, normal) => {
+              if (mv.addPoint(mm, normal)) {
+                setTool('navigate');
+                mv.setOpen(true);
+              }
+            }}
             onValveGestureStart={() => {
               anchorGesture.current = valveKeys.length
                 ? valveKeys.map((key) => ({
@@ -3018,6 +3163,21 @@ const MPRViewer = () => {
             />
           </Canvas>
         </Pane>
+        {mv.open && mv.result?.ok ? (
+          <MvSlicerView
+            volume={volume}
+            timeIndex={timeIndex}
+            frameCount={volume.dims.t}
+            result={mv.result}
+            windowCenter={windowCenter}
+            windowWidth={windowWidth}
+            flipVertical={mv.flipVertical}
+            mirror={mv.mirror}
+            onFlip={() => mv.setFlipVertical((v) => !v)}
+            onMirror={() => mv.setMirror((v) => !v)}
+            onClose={() => mv.setOpen(false)}
+          />
+        ) : null}
       </Grid>
       {ecg ? (
         <EcgStrip
