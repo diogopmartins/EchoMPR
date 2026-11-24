@@ -1,7 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { renderSliceToCanvas } from '../../utils/philipsVolume';
-import { frameToPixel, sampleFrame, worldToFrame } from '../../utils/mvSlicer';
+import {
+  frameToPixel,
+  frameToWorld,
+  pixelToFrame,
+  sampleFrame,
+  worldToFrame,
+} from '../../utils/mvSlicer';
 import { CUT_COLOR } from './drawMvOverlay';
 
 const Overlay = styled.div`
@@ -128,7 +134,7 @@ const Side = styled.div`
     height: auto;
     display: block;
     background: #000;
-    cursor: pointer;
+    touch-action: none;
   }
 `;
 
@@ -195,22 +201,61 @@ function CutCanvas({ volume, timeIndex, cut, windowCenter, windowWidth, widthPx 
   return <canvas ref={ref} />;
 }
 
-/** En-face key map (valve-level slab MIP) with the numbered cut lines. */
-function KeyMap({ volume, timeIndex, result, windowCenter, windowWidth, active, onPick }) {
+const KEY_POINTS = [
+  { key: 'al', text: 'AL', color: '#ffb74d' },
+  { key: 'mid', text: 'Mid', color: '#ffb74d' },
+  { key: 'pm', text: 'PM', color: '#ffb74d' },
+  { key: 'ao', text: 'Ao', color: '#e57373' },
+];
+
+/** Grab radius for the point handles and lines, in CSS pixels. */
+const HIT_CSS_PX = 11;
+
+function distToSegment(x, y, a, b) {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const l2 = vx * vx + vy * vy || 1;
+  const t = Math.max(0, Math.min(1, ((x - a.x) * vx + (y - a.y) * vy) / l2));
+  return Math.hypot(x - (a.x + t * vx), y - (a.y + t * vy));
+}
+
+/**
+ * En-face key map (valve-level slab MIP) with the numbered cut lines. The AL,
+ * Mid, PM and Ao points can be dragged here; the cuts update as they move.
+ */
+function KeyMap({
+  volume,
+  timeIndex,
+  result,
+  windowCenter,
+  windowWidth,
+  active,
+  onPick,
+  onMovePoint,
+}) {
   const ref = useRef(null);
   const geomRef = useRef(null);
-  const { keyMap } = result;
+  const dragRef = useRef(null);
+  // While a point is dragged the map keeps the frame it had at the start, so
+  // the image does not turn under the cursor as the AL→PM axis changes.
+  const [dragFrame, setDragFrame] = useState(null);
+  const [dragKey, setDragKey] = useState(null);
+  const frame = dragFrame || result.keyMap;
+  const mmPerPx = (frame.xMax - frame.xMin) / KEY_PX;
+
+  const img = useMemo(
+    () => sampleFrame(volume, timeIndex, frame, mmPerPx, { slabMm: KEY_SLAB_MM }),
+    [volume, timeIndex, frame, mmPerPx]
+  );
 
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
-    const mmPerPx = (keyMap.xMax - keyMap.xMin) / KEY_PX;
-    const img = sampleFrame(volume, timeIndex, keyMap, mmPerPx, { slabMm: KEY_SLAB_MM });
     renderSliceToCanvas(canvas, img, windowCenter, windowWidth);
     const ctx = canvas.getContext('2d');
     const px = (mm) => {
-      const f = worldToFrame(keyMap, mm);
-      const p = frameToPixel(keyMap, f.x, f.y, mmPerPx);
+      const f = worldToFrame(frame, mm);
+      const p = frameToPixel(frame, f.x, f.y, mmPerPx);
       return { x: p.px, y: p.py };
     };
     const ao = px(result.projected.ao);
@@ -220,7 +265,8 @@ function KeyMap({ volume, timeIndex, result, windowCenter, windowWidth, active, 
       const far = Math.hypot(a.x - ao.x, a.y - ao.y) > Math.hypot(b.x - ao.x, b.y - ao.y) ? a : b;
       return { a, b, far, index: cut.index };
     });
-    geomRef.current = { segs, width: img.width, height: img.height };
+    const pts = KEY_POINTS.map((p) => ({ ...p, ...px(result.projected[p.key]) }));
+    geomRef.current = { segs, pts, width: img.width, height: img.height };
 
     segs.forEach((s) => {
       const on = active === s.index;
@@ -242,43 +288,136 @@ function KeyMap({ volume, timeIndex, result, windowCenter, windowWidth, active, 
       ctx.fillStyle = active === s.index ? '#4caf50' : '#ffffff';
       ctx.fillText(String(s.index), s.far.x, s.far.y + 0.5);
     });
-    const label = (mm, text, color) => {
-      const p = px(mm);
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.textAlign = 'left';
-      ctx.fillText(text, p.x + 6, p.y - 6);
-    };
-    label(result.projected.al, 'AL', '#ffb74d');
-    label(result.projected.pm, 'PM', '#ffb74d');
-    label(result.projected.ao, 'Ao', '#e57373');
-  }, [volume, timeIndex, result, keyMap, windowCenter, windowWidth, active]);
 
-  const onClick = (e) => {
+    // Draggable point handles
+    ctx.textAlign = 'left';
+    pts.forEach((p) => {
+      const dragging = dragKey === p.key;
+      ctx.fillStyle = dragging ? '#ffffff' : p.color;
+      ctx.strokeStyle = dragging ? p.color : '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, dragging ? 6.5 : 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+      ctx.strokeText(p.text, p.x + 7, p.y - 7);
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.text, p.x + 7, p.y - 7);
+    });
+  }, [img, result, frame, mmPerPx, windowCenter, windowWidth, active, dragKey]);
+
+  useEffect(() => () => cancelAnimationFrame(dragRef.current?.raf), []);
+
+  /** Pointer position in canvas pixels, plus the CSS→canvas scale. */
+  const local = (e) => {
     const g = geomRef.current;
-    if (!g) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * g.width;
-    const y = ((e.clientY - rect.top) / rect.height) * g.height;
+    const k = g.width / rect.width;
+    return {
+      x: Math.max(0, Math.min(g.width - 1, (e.clientX - rect.left) * k)),
+      y: Math.max(0, Math.min(g.height - 1, (e.clientY - rect.top) * k)),
+      k,
+    };
+  };
+
+  const hitPoint = (x, y, k) => {
+    const g = geomRef.current;
     let best = null;
-    let bestD = 12;
+    let bestD = HIT_CSS_PX * k;
+    g.pts.forEach((p) => {
+      const d = Math.hypot(x - p.x, y - p.y);
+      if (d < bestD) {
+        bestD = d;
+        best = p.key;
+      }
+    });
+    return best;
+  };
+
+  const hitLine = (x, y, k) => {
+    const g = geomRef.current;
+    let best = null;
+    let bestD = HIT_CSS_PX * k;
     g.segs.forEach((s) => {
-      const vx = s.b.x - s.a.x;
-      const vy = s.b.y - s.a.y;
-      const l2 = vx * vx + vy * vy || 1;
-      const t = Math.max(0, Math.min(1, ((x - s.a.x) * vx + (y - s.a.y) * vy) / l2));
-      const d = Math.hypot(x - (s.a.x + t * vx), y - (s.a.y + t * vy));
+      const d = distToSegment(x, y, s.a, s.b);
       if (d < bestD) {
         bestD = d;
         best = s.index;
       }
     });
-    if (best) onPick(best);
+    return best;
   };
 
-  return <canvas ref={ref} onClick={onClick} title="Click a line to open that cut" />;
+  const flush = () => {
+    const d = dragRef.current;
+    if (!d) return;
+    d.raf = null;
+    if (d.pending) {
+      onMovePoint(d.key, d.pending);
+      d.pending = null;
+    }
+  };
+
+  const onPointerDown = (e) => {
+    if (e.button !== 0 || !geomRef.current) return;
+    const { x, y, k } = local(e);
+    const key = hitPoint(x, y, k);
+    if (!key) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const startFrame = result.keyMap;
+    dragRef.current = {
+      key,
+      frame: startFrame,
+      mmPerPx: (startFrame.xMax - startFrame.xMin) / KEY_PX,
+      moved: false,
+      pending: null,
+      raf: null,
+    };
+    setDragFrame(startFrame);
+    setDragKey(key);
+  };
+
+  const onPointerMove = (e) => {
+    if (!geomRef.current) return;
+    const { x, y, k } = local(e);
+    const d = dragRef.current;
+    if (d) {
+      const f = pixelToFrame(d.frame, x, y, d.mmPerPx);
+      d.pending = frameToWorld(d.frame, f.x, f.y);
+      d.moved = true;
+      if (!d.raf) d.raf = requestAnimationFrame(flush);
+      return;
+    }
+    e.currentTarget.style.cursor = hitPoint(x, y, k) ? 'grab' : hitLine(x, y, k) ? 'pointer' : 'default';
+  };
+
+  const onPointerUp = (e) => {
+    const d = dragRef.current;
+    if (d) {
+      cancelAnimationFrame(d.raf);
+      flush();
+      dragRef.current = null;
+      setDragFrame(null);
+      setDragKey(null);
+      return;
+    }
+    if (e.button !== 0 || !geomRef.current) return;
+    const { x, y, k } = local(e);
+    const index = hitLine(x, y, k);
+    if (index) onPick(index);
+  };
+
+  return (
+    <canvas
+      ref={ref}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      title="Drag AL, Mid, PM or Ao to adjust them · Click a line to open that cut"
+    />
+  );
 }
 
 export default function MvSlicerView({
@@ -293,6 +432,7 @@ export default function MvSlicerView({
   onFlip,
   onMirror,
   onClose,
+  onMovePoint,
 }) {
   const [single, setSingle] = useState(null);
 
@@ -365,6 +505,7 @@ export default function MvSlicerView({
             windowWidth={windowWidth}
             active={single}
             onPick={(index) => setSingle(index)}
+            onMovePoint={onMovePoint}
           />
           <Note>
             Cuts 1 and 9 sit on the commissures; 2–3 cross A1/P1, 4–6 A2/P2, 7–8 A3/P3 (approximate
@@ -372,7 +513,10 @@ export default function MvSlicerView({
             with the en-face plane on the annulus, and leaflet tissue above the line towards the LA
             in systole suggests prolapse of that scallop.
           </Note>
-          <Note>Click a cut to enlarge it. Space plays the cine; ← → step frames.</Note>
+          <Note>
+            Drag AL, Mid, PM or Ao in this map to adjust them; the cuts follow. Click a cut or its
+            line to enlarge it. Space plays the cine; ← → step frames.
+          </Note>
           {result.normalSource === 'points' && (
             <Note style={{ color: '#ffb74d' }}>
               The points were not picked in an en-face view, so the valve plane was taken from the

@@ -318,3 +318,23 @@ export function sampleFrame(volume, t, frame, mmPerPx, { slabMm = 0 } = {}) {
   }
   return { data, width, height, mmPerPx };
 }
+
+/** Inverse of frameToPixel. */
+export function pixelToFrame(frame, px, py, mmPerPx) {
+  return { x: frame.xMin + (px + 0.5) * mmPerPx, y: frame.yMin + (py + 0.5) * mmPerPx };
+}
+
+/** Frame coordinates (mm) → world mm on the frame's plane. */
+export function frameToWorld(frame, x, y) {
+  return add(add(frame.ref, scale(frame.right, x)), scale(frame.down, y));
+}
+
+/**
+ * Move a picked point to `inPlane` (a point on the valve-level plane) while
+ * keeping its original depth along `normal`, so editing in the en-face key
+ * map never changes how high the point sits (e.g. the AoV above the valve).
+ */
+export function moveKeepingDepth(old, inPlane, normal) {
+  const n = normalize(normal);
+  return add(inPlane, scale(n, dot(sub(old, inPlane), n)));
+}

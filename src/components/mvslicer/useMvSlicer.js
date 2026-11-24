@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { MV_POINTS, buildMvSlicer } from '../../utils/mvSlicer';
+import { MV_POINTS, buildMvSlicer, moveKeepingDepth } from '../../utils/mvSlicer';
 
 /**
  * State of the mitral valve slicer: the four picked points (AL, Mid, PM,
@@ -34,6 +34,22 @@ export default function useMvSlicer({ volume }) {
     if (next.key === 'al') setViewNormal(paneNormal ? paneNormal.slice() : null);
     setPoints((prev) => ({ ...prev, [next.key]: mm.slice() }));
     return next.key === MV_POINTS[MV_POINTS.length - 1].key;
+  };
+
+  /**
+   * Move a placed point to `inPlaneMm` (a point on the valve-level plane, e.g.
+   * from the en-face key map), keeping its height above or below the valve.
+   */
+  const movePoint = (key, inPlaneMm) => {
+    const normal = result?.ok ? result.normal : viewNormal;
+    setPoints((prev) => {
+      if (!prev[key]) return prev;
+      const moved = normal ? moveKeepingDepth(prev[key], inPlaneMm, normal) : inPlaneMm.slice();
+      const candidate = { ...prev, [key]: moved };
+      // Ignore a move that would make the cuts impossible (e.g. AL onto PM).
+      const ok = buildMvSlicer(candidate, viewNormal, { mode, flipVertical, mirror }).ok;
+      return ok ? candidate : prev;
+    });
   };
 
   const undo = () => {
@@ -85,6 +101,7 @@ export default function useMvSlicer({ volume }) {
     open,
     setOpen,
     addPoint,
+    movePoint,
     undo,
     clear,
     overlay,

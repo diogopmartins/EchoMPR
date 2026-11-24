@@ -4,6 +4,9 @@ import {
   buildMvSlicer,
   coaptationTargets,
   frameToPixel,
+  frameToWorld,
+  moveKeepingDepth,
+  pixelToFrame,
   sampleFrame,
   scallopLabel,
   worldToFrame,
@@ -222,5 +225,43 @@ describe('sampleFrame on the phantom', () => {
     const count = (img) => img.data.reduce((s, v) => s + (v > 100 ? 1 : 0), 0);
     // The valve-level section misses most of the bulge; the slab includes it.
     expect(count(slab)).toBeGreaterThan(count(thin));
+  });
+});
+
+describe('editing points in the key map', () => {
+  const r = buildMvSlicer(POINTS, [0, 0, 1]);
+  const { keyMap } = r;
+
+  test('pixel → frame → world round-trips through frameToPixel / worldToFrame', () => {
+    const mmPerPx = 0.3;
+    const world = frameToWorld(keyMap, 3.2, -4.7);
+    const f = worldToFrame(keyMap, world);
+    expect(f.x).toBeCloseTo(3.2, 9);
+    expect(f.y).toBeCloseTo(-4.7, 9);
+    const { px, py } = frameToPixel(keyMap, f.x, f.y, mmPerPx);
+    const back = pixelToFrame(keyMap, px, py, mmPerPx);
+    expect(back.x).toBeCloseTo(3.2, 9);
+    expect(back.y).toBeCloseTo(-4.7, 9);
+  });
+
+  test('moving the AoV in the en-face map keeps its height above the valve', () => {
+    const target = frameToWorld(keyMap, 4, -12);
+    const moved = moveKeepingDepth(POINTS.ao, target, r.normal);
+    expect(moved[2]).toBeCloseTo(POINTS.ao[2], 9);
+    const f = worldToFrame(keyMap, moved);
+    expect(f.x).toBeCloseTo(4, 9);
+    expect(f.y).toBeCloseTo(-12, 9);
+  });
+
+  test('moving AL outwards lengthens the coaptation line and widens the spacing', () => {
+    const al = worldToFrame(keyMap, r.projected.al);
+    const movedAl = moveKeepingDepth(POINTS.al, frameToWorld(keyMap, al.x - 4, al.y), r.normal);
+    const r2 = buildMvSlicer({ ...POINTS, al: movedAl }, [0, 0, 1]);
+    expect(r2.ok).toBe(true);
+    expect(r2.coaptationLengthMm).toBeGreaterThan(r.coaptationLengthMm + 3);
+    expect(r2.spacingMm).toBeGreaterThan(r.spacingMm);
+    // The PM cut still runs from PM to the AoV; the AL cut follows the new AL.
+    expect(vecLen(sub(r2.cuts[8].right, r.cuts[8].right))).toBeLessThan(1e-9);
+    expect(vecLen(sub(r2.cuts[0].right, r.cuts[0].right))).toBeGreaterThan(0.05);
   });
 });
