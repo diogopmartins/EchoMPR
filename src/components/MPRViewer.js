@@ -3176,6 +3176,7 @@ const MPRViewer = () => {
             onFlip={() => mv.setFlipVertical((v) => !v)}
             onMirror={() => mv.setMirror((v) => !v)}
             onClose={() => mv.setOpen(false)}
+            onMovePoint={mv.movePoint}
           />
         ) : null}
       </Grid>

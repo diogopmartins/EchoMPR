@@ -48,6 +48,7 @@ How the cuts are placed:
 - **Labels:** cuts 1 and 9 are the commissures; 2–3 cross A1/P1, 4–6 A2/P2, 7–8 A3/P3 (approximate Carpentier segments).
 - **Valve-level line:** a dashed line marks the level the points were picked at. Leaflet tissue above it towards the LA in systole suggests prolapse.
 - **Key map:** a surgical-view map (valve-level 10 mm slab) shows where each numbered cut runs. Click a line to open that cut.
+- **Editing points:** drag **AL**, **Mid**, **PM** or **Ao** in the key map to adjust them; the cuts update as you drag. Each point keeps its height above or below the valve, and moves that would make the cuts impossible (such as AL onto PM) are ignored.
 
 ## Local development
 
