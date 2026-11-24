@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { renderSliceToCanvas } from '../../utils/philipsVolume';
-import { frameToPixel, pixelToFrame, sampleFrame } from '../../utils/mvSlicer';
+import { MIN_ANNULUS_POINTS, aortoMitralAngle, fitAnnulus, withAnnulus } from '../../utils/annulusFit';
+import { getVolumeEcg, sampleIndexToFrame } from '../../utils/ecg';
+import { cross, dot, normalize, scale, sub } from '../../utils/mprGeometry';
+import { frameToPixel, frameToWorld, pixelToFrame, sampleFrame, worldToFrame } from '../../utils/mvSlicer';
 import {
   PROLAPSE_MM,
   TEER_STEPS,
@@ -181,6 +184,20 @@ const CELL_PX = 320;
 const SINGLE_PX = 900;
 const TRACE_OK = '#4fc3f7';
 const TRACE_PROLAPSE = '#ff5252';
+const HINGE_COLOR = '#ffeb3b';
+const AORTIC_COLOR = '#e57373';
+const TENT_FILL = 'rgba(66, 135, 245, 0.35)';
+/** Hinges this close to a cut's plane are drawn in it (mm). */
+const ON_PLANE_MM = 1;
+const MIN_ANNULUS_CUTS = 3;
+
+/** Points (world mm) lying in a cut's plane, in the cut's coordinates. */
+function inCut(cut, items, getPoint) {
+  const n = normalize(cross(cut.right, cut.down));
+  return items
+    .filter((it) => Math.abs(dot(sub(getPoint(it), cut.ref), n)) < ON_PLANE_MM)
+    .map((it) => ({ ...it, ...worldToFrame(cut, getPoint(it)) }));
+}
 
 /** Canvas pixel under a mouse event, for a canvas drawn with object-fit: contain. */
 function eventToCanvasPx(e, canvas) {
@@ -195,7 +212,20 @@ function eventToCanvasPx(e, canvas) {
  * One cut for the current frame, with the AoV and coaptation markers, the
  * level of the picked points, the leaflet trace, and TEER points.
  */
-function CutCanvas({ volume, timeIndex, cut, windowCenter, windowWidth, widthPx, profile, teerPoints, onImageClick }) {
+function CutCanvas({
+  volume,
+  timeIndex,
+  cut,
+  windowCenter,
+  windowWidth,
+  widthPx,
+  profile,
+  showReference,
+  hinges,
+  aortic,
+  teerPoints,
+  onImageClick,
+}) {
   const ref = useRef(null);
   const scaleRef = useRef(null);
   useEffect(() => {
@@ -248,22 +278,94 @@ function CutCanvas({ volume, timeIndex, cut, windowCenter, windowWidth, widthPx,
       ctx.globalAlpha = 1;
     }
 
+    // Tenting: between the reference and leaflets below it
+    const pts = profile?.points || [];
+    ctx.fillStyle = TENT_FILL;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      if (a.h == null || b.h == null || (a.h >= 0 && b.h >= 0)) continue;
+      const corners = [
+        P(a.x, -a.r),
+        P(b.x, -b.r),
+        P(b.x, -(Math.min(0, b.h) + b.r)),
+        P(a.x, -(Math.min(0, a.h) + a.r)),
+      ];
+      ctx.beginPath();
+      corners.forEach((c, k) => (k ? ctx.lineTo(c.px, c.py) : ctx.moveTo(c.px, c.py)));
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // The annulus reference heights are measured from (plane or saddle)
+    if (showReference && pts.length > 1) {
+      ctx.strokeStyle = HINGE_COLOR;
+      ctx.globalAlpha = 0.8;
+      ctx.lineWidth = Math.max(1, r * 0.25);
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const q = P(p.x, -p.r);
+        if (i) ctx.lineTo(q.px, q.py);
+        else ctx.moveTo(q.px, q.py);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+
     // Leaflet trace (atrial surface), red where it rises above the prolapse limit
-    if (profile?.points?.length) {
+    if (pts.length) {
       ctx.lineWidth = Math.max(1.5, r * 0.4);
-      for (let i = 1; i < profile.points.length; i++) {
-        const a = profile.points[i - 1];
-        const b = profile.points[i];
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1];
+        const b = pts[i];
         if (a.h == null || b.h == null) continue;
         ctx.strokeStyle = Math.max(a.h, b.h) > PROLAPSE_MM ? TRACE_PROLAPSE : TRACE_OK;
-        const pa = P(a.x, -a.h);
-        const pb = P(b.x, -b.h);
+        const pa = P(a.x, -(a.h + a.r));
+        const pb = P(b.x, -(b.h + b.r));
         ctx.beginPath();
         ctx.moveTo(pa.px, pa.py);
         ctx.lineTo(pb.px, pb.py);
         ctx.stroke();
       }
     }
+
+    // Annulus hinges (diamonds) and the annulus line in this cut
+    const mark = (list, color, shape) => {
+      list.forEach((h) => {
+        const p = P(h.x, h.y);
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        if (shape === 'diamond') {
+          ctx.moveTo(p.px, p.py - r);
+          ctx.lineTo(p.px + r, p.py);
+          ctx.lineTo(p.px, p.py + r);
+          ctx.lineTo(p.px - r, p.py);
+          ctx.closePath();
+        } else {
+          ctx.arc(p.px, p.py, r * 0.75, 0, Math.PI * 2);
+        }
+        ctx.fill();
+        ctx.stroke();
+      });
+      if (list.length === 2) {
+        const a = P(list[0].x, list[0].y);
+        const b = P(list[1].x, list[1].y);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(1, r * 0.25);
+        ctx.setLineDash([3, 4]);
+        ctx.beginPath();
+        ctx.moveTo(a.px, a.py);
+        ctx.lineTo(b.px, b.py);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    };
+    if (hinges?.length) mark(hinges, HINGE_COLOR, 'diamond');
+    if (aortic?.length) mark(aortic, AORTIC_COLOR, 'dot');
 
     // TEER points and lines
     if (teerPoints) {
@@ -297,7 +399,7 @@ function CutCanvas({ volume, timeIndex, cut, windowCenter, windowWidth, widthPx,
         ctx.fillText(String(i + 1), p.px + r, p.py - r);
       });
     }
-  }, [volume, timeIndex, cut, windowCenter, windowWidth, widthPx, profile, teerPoints]);
+  }, [volume, timeIndex, cut, windowCenter, windowWidth, widthPx, profile, showReference, hinges, aortic, teerPoints]);
 
   const onClick = (e) => {
     if (!onImageClick || !ref.current || !scaleRef.current) return;
@@ -327,29 +429,65 @@ export default function SlicerView({
   slicer,
   windowCenter,
   windowWidth,
+  onSeek,
 }) {
-  const { result } = slicer;
+  const { result, hinges, setHinges, aortic, setAortic } = slicer;
   const [single, setSingle] = useState(null);
   const [showHeights, setShowHeights] = useState(true);
-  const analysis = useValveAnalysis({ volume, timeIndex, result });
   const defaultCut = result.kind === 'mv' ? Math.ceil(result.cuts.length / 2) : 2;
   const [teerCut, setTeerCut] = useState(defaultCut);
   const [teerPoints, setTeerPoints] = useState({});
-  const [teerActive, setTeerActive] = useState(false);
+  // What a click in the enlarged cut does: null, 'teer', 'annulus' or 'aortic'
+  const [pickMode, setPickMode] = useState(null);
+  const [traceCut, setTraceCut] = useState(null);
+  const [traceSide, setTraceSide] = useState('L');
   const [device, setDevice] = useState(4);
   const [clipCut, setClipCut] = useState(defaultCut);
 
+  // ---- 3D annulus from the hinges, and the result the analysis sees
+  const down = result.kind === 'tv' ? result.raToRv : result.laToLv;
+  const tracedCuts = useMemo(() => {
+    const per = {};
+    hinges.forEach((h) => {
+      per[h.cut] = (per[h.cut] || 0) + 1;
+    });
+    return Object.keys(per).filter((k) => per[k] === 2).length;
+  }, [hinges]);
+  const fit = useMemo(() => {
+    if (hinges.length < MIN_ANNULUS_POINTS || tracedCuts < MIN_ANNULUS_CUTS) return null;
+    const directions = result.kind === 'mv' ? { cc: result.chord, ap: result.anterior } : {};
+    return fitAnnulus(
+      hinges.map((h) => h.p),
+      { up: scale(down, -1), directions }
+    );
+  }, [hinges, tracedCuts, result, down]);
+  const reference = fit ? slicer.reference : 'picked';
+  const analysisResult = useMemo(() => withAnnulus(result, fit, reference), [result, fit, reference]);
+  const analysis = useValveAnalysis({ volume, timeIndex, result: analysisResult });
+
+  // ---- Aorto-mitral angle: aortic hinges and the mitral hinges of the same cut
+  const aorticCutObj = aortic ? result.cuts.find((c) => c.index === aortic.cut) : null;
+  let angle = null;
+  let aorticNote = '';
+  if (aortic?.pts.length === 2 && aorticCutObj) {
+    const antSide = aorticCutObj.leaflets.left === 'anterior' ? 'L' : 'R';
+    const ant = hinges.find((h) => h.cut === aortic.cut && h.side === antSide);
+    const post = hinges.find((h) => h.cut === aortic.cut && h.side !== antSide);
+    if (ant && post) angle = aortoMitralAngle({ ant: ant.p, post: post.p }, aortic.pts);
+    else aorticNote = `Trace the annulus in cut ${aortic.cut} too: the angle uses its mitral hinges.`;
+  }
+
   // Measurements are in a cut's own coordinates; they no longer apply once the
-  // cuts change (points moved, flipped, mode changed).
+  // cuts change (points moved, flipped, mode changed). Hinges are kept (world mm).
   useEffect(() => {
     setTeerPoints({});
-    setTeerActive(false);
+    setPickMode((m) => (m === 'teer' ? null : m));
   }, [result]);
 
   useEffect(() => {
     const onKey = (ev) => {
       if (ev.key !== 'Escape') return;
-      setTeerActive(false);
+      setPickMode(null);
       setSingle(null);
     };
     window.addEventListener('keydown', onKey);
@@ -367,8 +505,8 @@ export default function SlicerView({
     if (!orifice) return null;
     const cut = result.cuts.find((c) => c.index === clipCut) || result.cuts[0];
     const { site, coaptDir } = clipSiteForCut(result, cut);
-    return { ...virtualClip(orifice, result, site, coaptDir, device), site, coaptDir };
-  }, [orifice, result, clipCut, device]);
+    return { ...virtualClip(orifice, analysisResult, site, coaptDir, device), site, coaptDir };
+  }, [orifice, result, analysisResult, clipCut, device]);
   const showOrifice = orifice && analysis.cycle.bestFrame === timeIndex;
 
   const teer = {
@@ -379,9 +517,9 @@ export default function SlicerView({
     },
     points: teerPoints,
     measures,
-    active: teerActive,
+    active: pickMode === 'teer',
     start: () => {
-      setTeerActive(true);
+      setPickMode('teer');
       setSingle(teerCut);
     },
     undo: () => {
@@ -392,11 +530,11 @@ export default function SlicerView({
         delete out[last.key];
         return out;
       });
-      setTeerActive(true);
+      setPickMode('teer');
     },
     clear: () => {
       setTeerPoints({});
-      setTeerActive(false);
+      setPickMode(null);
     },
   };
 
@@ -405,14 +543,127 @@ export default function SlicerView({
     if (!step) return;
     const next = { ...teerPoints, [step.key]: { x: f.x, y: f.y } };
     setTeerPoints(next);
-    if (TEER_STEPS.every((s) => next[s.key])) setTeerActive(false);
+    if (TEER_STEPS.every((s) => next[s.key])) setPickMode(null);
   };
+
+  // ---- Annulus tracing: two hinges per cut, then on to the next cut
+  const openTrace = (index, side = 'L') => {
+    setPickMode('annulus');
+    setTraceCut(index);
+    setTraceSide(side);
+    setSingle(index);
+  };
+  const advanceTrace = (fromIndex) => {
+    const i = result.cuts.findIndex((c) => c.index === fromIndex);
+    const next = result.cuts[i + 1];
+    if (next) openTrace(next.index);
+    else {
+      setPickMode(null);
+      setSingle(null);
+    }
+  };
+  const addHinge = (cut, f) => {
+    const hinge = { p: frameToWorld(cut, f.x, f.y), cut: cut.index, side: traceSide, t: timeIndex };
+    setHinges((hs) => [...hs.filter((h) => !(h.cut === cut.index && h.side === traceSide)), hinge]);
+    if (traceSide === 'L') setTraceSide('R');
+    else advanceTrace(cut.index);
+  };
+  const annulus = {
+    fit,
+    hingeCount: hinges.length,
+    cutsDone: tracedCuts,
+    frames: [...new Set(hinges.map((h) => h.t))],
+    tracing: pickMode === 'annulus',
+    traceCut,
+    reference,
+    setReference: slicer.setReference,
+    start: () => {
+      const counts = {};
+      hinges.forEach((h) => {
+        counts[h.cut] = (counts[h.cut] || 0) + 1;
+      });
+      const todo = result.cuts.find((c) => (counts[c.index] || 0) < 2) || result.cuts[0];
+      openTrace(single && pickMode !== 'annulus' ? single : todo.index);
+    },
+    stop: () => {
+      setPickMode(null);
+    },
+    skip: () => advanceTrace(traceCut),
+    undo: () => {
+      const last = hinges[hinges.length - 1];
+      if (!last) return;
+      setHinges((hs) => hs.slice(0, -1));
+      if (pickMode === 'annulus') openTrace(last.cut, last.side);
+    },
+    clear: () => {
+      setHinges([]);
+      setAortic(null);
+      if (pickMode === 'annulus' || pickMode === 'aortic') setPickMode(null);
+    },
+    angle,
+    aorticNote,
+    aorticActive: pickMode === 'aortic',
+    aorticStart: () => {
+      const index = single || defaultCut;
+      setAortic({ cut: index, t: timeIndex, pts: [] });
+      setPickMode('aortic');
+      setSingle(index);
+    },
+  };
+  const addAortic = (cut, f) => {
+    const p = frameToWorld(cut, f.x, f.y);
+    const prev = aortic?.cut === cut.index ? aortic.pts : [];
+    const pts = [...prev, p].slice(-2);
+    setAortic({ cut: cut.index, t: timeIndex, pts });
+    if (pts.length === 2) setPickMode(null);
+  };
+
+  // Hinges and aortic points lying in each cut (stable arrays, so the cut
+  // canvases only redraw when they change)
+  const cutMarks = useMemo(() => {
+    const out = {};
+    result.cuts.forEach((c) => {
+      out[c.index] = {
+        hinges: inCut(c, hinges, (h) => h.p),
+        // Near the AoV the fan cuts converge, so show these only in their own cut
+        aortic: aortic?.cut === c.index ? inCut(c, aortic.pts, (pt) => pt) : null,
+      };
+    });
+    return out;
+  }, [result, hinges, aortic]);
+
+  const ecgFrames = useMemo(() => {
+    const ecg = getVolumeEcg(volume);
+    if (!ecg?.beats?.length) return [];
+    return [...new Set(ecg.beats.map((b) => sampleIndexToFrame(ecg, b, frameCount)))].sort((a, b) => a - b);
+  }, [volume, frameCount]);
 
   const o = result.orientation;
   const cuts = single ? result.cuts.filter((c) => c.index === single) : result.cuts;
   const frame = analysis.frame;
   const nextTeerStep = TEER_STEPS.find((s) => !teerPoints[s.key]);
   const flipLabel = `Flip ${o.top}/${o.bottom}`;
+  const refLabel = reference === 'saddle' ? ' · heights from the 3D annulus' : reference === 'plane' ? ' · heights from the annulus plane' : '';
+
+  const clickModeFor = (cut) => {
+    if (single !== cut.index) return null;
+    if (pickMode === 'teer' && cut.index === teerCut) return 'teer';
+    if (pickMode === 'annulus' && cut.index === traceCut) return 'annulus';
+    if (pickMode === 'aortic' && aortic?.cut === cut.index) return 'aortic';
+    return null;
+  };
+  const promptFor = (cut, mode) => {
+    if (mode === 'teer' && nextTeerStep) {
+      return `${TEER_STEPS.indexOf(nextTeerStep) + 1}/${TEER_STEPS.length}: ${nextTeerStep.label(cut)}`;
+    }
+    if (mode === 'annulus') {
+      const leaflet = traceSide === 'L' ? cut.leaflets.left : cut.leaflets.right;
+      const k = result.cuts.indexOf(cut) + 1;
+      return `Annulus, cut ${k}/${result.cuts.length}: click the ${leaflet} hinge`;
+    }
+    if (mode === 'aortic') return `Aortic annulus: hinge ${(aortic?.pts.length || 0) + 1} of 2`;
+    return null;
+  };
 
   return (
     <Overlay>
@@ -421,8 +672,8 @@ export default function SlicerView({
           <strong>{result.title}</strong>
           <span>
             {result.modeText} · {result.cuts.length} cuts
-            {result.kind === 'mv' ? ` · ${result.spacingMm.toFixed(1)} mm apart on the coaptation line` : ''} · T{' '}
-            {timeIndex + 1}/{frameCount}
+            {result.kind === 'mv' ? ` · ${result.spacingMm.toFixed(1)} mm apart on the coaptation line` : ''}
+            {refLabel} · T {timeIndex + 1}/{frameCount}
           </span>
         </Title>
         <HeaderButton
@@ -451,18 +702,27 @@ export default function SlicerView({
             const i = result.cuts.indexOf(cut);
             const profile = frame?.profiles[i];
             const summary = cellSummary(profile, cut);
-            const measuring = teerActive && single === cut.index && cut.index === teerCut;
+            const mode = clickModeFor(cut);
+            const prompt = promptFor(cut, mode);
             const showTeer = result.kind === 'mv' && cut.index === teerCut && Object.keys(teerPoints).length;
+            const onImageClick =
+              mode === 'teer'
+                ? addTeerPoint
+                : mode === 'annulus'
+                  ? (f) => addHinge(cut, f)
+                  : mode === 'aortic'
+                    ? (f) => addAortic(cut, f)
+                    : null;
             return (
               <Cell
                 key={cut.index}
                 $single={Boolean(single)}
-                $measuring={measuring}
+                $measuring={Boolean(mode)}
                 onClick={() => {
-                  if (measuring) return;
+                  if (mode) return;
                   setSingle(single ? null : cut.index);
                 }}
-                title={measuring ? 'Click the next TEER point' : single ? 'Back to all cuts' : 'Enlarge this cut'}
+                title={mode ? 'Click the point named at the top' : single ? 'Back to all cuts' : 'Enlarge this cut'}
               >
                 <CutCanvas
                   volume={volume}
@@ -472,20 +732,20 @@ export default function SlicerView({
                   windowWidth={windowWidth}
                   widthPx={single ? SINGLE_PX : CELL_PX}
                   profile={profile}
+                  showReference={Boolean(analysisResult.refHeight)}
+                  hinges={cutMarks[cut.index].hinges}
+                  aortic={cutMarks[cut.index].aortic}
                   teerPoints={showTeer ? teerPoints : null}
-                  onImageClick={measuring ? addTeerPoint : null}
+                  onImageClick={onImageClick}
                 />
                 <CellLabel $alert={summary.alert}>
                   {cut.index} · {cut.label}
                 </CellLabel>
-                {measuring && nextTeerStep ? (
-                  <Prompt>
-                    {TEER_STEPS.indexOf(nextTeerStep) + 1}/{TEER_STEPS.length}: {nextTeerStep.label(cut)}
-                  </Prompt>
-                ) : null}
+                {prompt ? <Prompt>{prompt}</Prompt> : null}
                 <CellResult $alert={summary.alert}>
                   {summary.text}
                   {summary.gap ? <span className="gap"> · gap {summary.gap.toFixed(1)} mm</span> : null}
+                  {profile?.tentingHeightMm > 0.5 ? ` · tent ${profile.tentingHeightMm.toFixed(1)} mm` : ''}
                 </CellResult>
                 <Orient $pos="top: 6px; right: 8px;">{o.top}</Orient>
                 <Orient $pos="bottom: 3px; left: 50%; transform: translateX(-50%);">{o.bottom}</Orient>
@@ -500,7 +760,7 @@ export default function SlicerView({
           <KeyMap
             volume={volume}
             timeIndex={timeIndex}
-            result={result}
+            result={analysisResult}
             windowCenter={windowCenter}
             windowWidth={windowWidth}
             active={single}
@@ -509,6 +769,7 @@ export default function SlicerView({
             heights={showHeights ? frame?.map : null}
             orifice={showOrifice ? orifice : null}
             clip={showOrifice ? clipResult : null}
+            hinges={hinges}
           />
           <Note>
             Drag the points in this map to adjust them; the cuts follow. Click a cut or its line to enlarge it. Space
@@ -521,15 +782,18 @@ export default function SlicerView({
             </Note>
           )}
           <SidePanel
-            result={result}
+            result={analysisResult}
             analysis={analysis}
             showHeights={showHeights}
             setShowHeights={setShowHeights}
             onOpenCut={(index) => setSingle(index)}
             teer={teer}
             clip={{ device, setDevice, cutIndex: clipCut, setCutIndex: setClipCut, result: clipResult }}
+            annulus={annulus}
             timeIndex={timeIndex}
             frameCount={frameCount}
+            onSeek={onSeek}
+            rFrames={ecgFrames}
           />
         </Side>
       </Body>

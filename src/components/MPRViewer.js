@@ -3199,6 +3199,8 @@ const MPRViewer = () => {
           </PaneTools>
           <Canvas
             flat
+            // The slicer view covers the panes: stop rendering the volume meanwhile.
+            frameloop={activeSlicer ? 'never' : 'always'}
             dpr={[1, 2]}
             camera={{ position: [1.15, 0.82, 1.25], fov: 32, near: 0.05, far: 30 }}
             style={{
@@ -3250,6 +3252,10 @@ const MPRViewer = () => {
             slicer={activeSlicer}
             windowCenter={windowCenter}
             windowWidth={windowWidth}
+            onSeek={(t) => {
+              setPlaying(false);
+              setTimeIndex(t);
+            }}
           />
         ) : null}
       </Grid>

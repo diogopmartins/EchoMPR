@@ -70,6 +70,7 @@ export default function KeyMap({
   heights,
   orifice,
   clip,
+  hinges = [],
 }) {
   const ref = useRef(null);
   const geomRef = useRef(null);
@@ -170,6 +171,22 @@ export default function KeyMap({
       });
     }
 
+    // Annulus hinges traced in the cuts
+    hinges.forEach((h) => {
+      const q = px(h.p);
+      ctx.fillStyle = '#ffeb3b';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(q.x, q.y - 3.5);
+      ctx.lineTo(q.x + 3.5, q.y);
+      ctx.lineTo(q.x, q.y + 3.5);
+      ctx.lineTo(q.x - 3.5, q.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    });
+
     // Guides (coaptation curve or lines)
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
     ctx.lineWidth = 1;
@@ -232,7 +249,7 @@ export default function KeyMap({
       ctx.fillStyle = p.color;
       ctx.fillText(p.text, p.x + 7, p.y - 7);
     });
-  }, [img, result, frame, mmPerPx, windowCenter, windowWidth, active, dragKey, heights, orifice, clip]);
+  }, [img, result, frame, mmPerPx, windowCenter, windowWidth, active, dragKey, heights, orifice, clip, hinges]);
 
   useEffect(() => () => cancelAnimationFrame(dragRef.current?.raf), []);
 

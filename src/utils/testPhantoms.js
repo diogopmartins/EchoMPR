@@ -99,3 +99,39 @@ export function tricuspidPhantom() {
     return 215;
   });
 }
+
+// ------------------------------------------------ Saddle annulus, tethered --
+// Annulus: ellipse centred (24, 28), 15 mm (AL–PM, x) by 12 mm (AP, y), with
+// a saddle: z = 20 + s·cos 2φ (φ the polar angle from +x), so the anterior and
+// posterior horns sit s mm towards the atrium (−z) and the commissures s mm
+// towards the ventricle. The leaflets follow the harmonic surface of the
+// annulus plus a tent T·(1 − ρ²) towards the ventricle (functional MR):
+// relative to the saddle they sit T·(1 − ρ²) below it, T at the centre.
+export const SADDLE = { cx: 24, cy: 28, a: 15, b: 12, s: 3, tent: 8 };
+
+export function saddleAnnulusPoint(phi) {
+  const { cx, cy, a, b, s } = SADDLE;
+  const r = 1 / Math.sqrt((Math.cos(phi) / a) ** 2 + (Math.sin(phi) / b) ** 2);
+  return [cx + r * Math.cos(phi), cy + r * Math.sin(phi), 20 + s * Math.cos(2 * phi)];
+}
+
+export const SADDLE_MV_POINTS = {
+  al: [10, 29, 20],
+  mid: [24, 30, 20],
+  pm: [38, 29, 20],
+  ao: [24, 7, 21],
+};
+
+/** One frame; `hole` ([rx, ry] mm around (24, 30)) opens an orifice in the leaflets. */
+export function saddlePhantom({ tent = SADDLE.tent, hole = null } = {}) {
+  const { cx, cy, a, b, s } = SADDLE;
+  return makeVolume(1, (t, x, y, z) => {
+    if (Math.abs(Math.hypot(x - 24, y - 7, z - 21) - 6) < 0.8) return 190;
+    const rho2 = ((x - cx) / a) ** 2 + ((y - cy) / b) ** 2;
+    if (rho2 > 1) return null;
+    const phi = Math.atan2(y - cy, x - cx);
+    const zLeaf = 20 + s * rho2 * Math.cos(2 * phi) + tent * (1 - rho2);
+    if (hole && ((x - 24) / hole[0]) ** 2 + ((y - 30) / hole[1]) ** 2 <= 1) return null;
+    return Math.abs(z - zLeaf) < 0.8 ? 215 : null;
+  });
+}

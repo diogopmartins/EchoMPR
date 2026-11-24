@@ -11,6 +11,8 @@ Browser-based **multi-planar reconstruction (MPR)** and 3D volume viewing for **
 - Export current timepoint as NRRD
 - MV slicer: nine long-axis cuts across the mitral valve to find prolapsing scallops, with a prolapse height map, per-cut measurements and TEER planning
 - TV slicer: cuts across each tricuspid coaptation line, with prolapse and coaptation-gap measurements
+- 3D annulus traced in the slicer cuts (saddle shape, area, perimeter, diameters, AHCWR, aorto-mitral angle), used as the reference for leaflet heights
+- Tenting (height, area, volume) for functional MR/TR, and a cycle analysis that charts every frame and jumps to the worst one
 - No server: files never leave the browser
 
 ## Supported data
@@ -53,7 +55,7 @@ How the cuts are placed:
 
 ### Prolapse map and per-cut measurements
 
-The app follows the valve axis from the atrial side and takes the first voxel bright enough to be tissue as the leaflet's atrial surface. Two consecutive samples must be above the tissue threshold, so single speckles are ignored. The threshold is set per frame, halfway between blood and leaflet tissue, and can be overridden in the side panel. Heights are measured from the plane of the picked points, so pick them at the annulus level.
+The app follows the valve axis from the atrial side and takes the first voxel bright enough to be tissue as the leaflet's atrial surface. Two consecutive samples must be above the tissue threshold, so single speckles are ignored. The threshold is set per frame, halfway between blood and leaflet tissue, and can be overridden in the side panel. Heights are measured from the plane of the picked points, so pick them at the annulus level, or from the traced 3D annulus (see below).
 
 - **Prolapse map:** leaflet height over the valve outline as a colour scale (red = towards the atrium), on the surgical-view map. Prolapse is a height over 2 mm. It reports the maximum, the area above 2 mm, the width along the coaptation line, and a table per segment (A1–P3 for the MV, A/S/P for the TV).
 - **Per-cut measurements:** each cut shows the traced leaflet (red where above 2 mm), its maximum height and which leaflet, the length of the prolapsing part, and the **coaptation gap**. The gap is the stretch without tissue at the coaptation point, bounded by leaflets on both sides.
@@ -68,9 +70,37 @@ The app follows the valve axis from the atrial side and takes the first voxel br
   5. the anterior leaflet tip
 
   This gives the leaflet lengths, the annulus in that cut, coaptation depth (from the hinge line) and length, and the tip-to-tip gap.
-- **Find MVA over the cycle:** in every frame, the planes between the valve level and 15 mm towards the LV are flood-filled from the coaptation centre. Regions that reach the valve outline are not enclosed by leaflets and are skipped. The smallest enclosed area per frame is the orifice, and the largest over the cycle is reported as the MVA.
+- **Find MVA over the cycle:** in every frame, sections between the valve level and 15 mm towards the LV are flood-filled from the coaptation centre. The sections are planes, or surfaces parallel to the saddle once the annulus is traced. Regions that reach the valve outline are not enclosed by leaflets and are skipped. An enclosed region only counts if it carries on into the ventricle; the funnel of a closed, tented valve does not. The smallest enclosed area per frame is the orifice, and the largest over the open frames of the cycle is reported as the MVA.
 - **Virtual clip:** closes a band across the orifice at the chosen cut. The band is the device width (4, 6 or 10 mm) plus 2 mm of approximated tissue on each side. This is a rough geometric estimate, not a validated predictor.
 - **Criteria:** a table checks the values against the EVEREST anatomical criteria: coaptation length ≥ 2 mm, coaptation depth ≤ 11 mm, flail gap < 10 mm, flail width < 15 mm, posterior leaflet ≥ 10 mm, MVA ≥ 4.0 cm².
+
+### 3D annulus
+
+**Trace annulus** opens the cuts one by one: click the two annulus hinge points in each, and the next cut opens. **Skip cut** leaves one out. Three cuts are enough for a fit; all nine give the best saddle. Trace in one frame; mid-systole shows the saddle best.
+
+The hinges get a best-fit plane and a closed curve: radius and height as Fourier series of the angle around the centre. The second harmonic of the height is the saddle. Hinges from fan cuts bunch on the anterior side, which would tilt a plain fit, so the plane is refined from the fitted curve itself and the curve refitted.
+
+- **Measurements:** 3D and projected area, perimeter, AP and commissural diameters (max and min for the TV), saddle height and AHCWR (annulus height to commissural width ratio; below 15% is a flattened annulus).
+- **Aorto-mitral angle:** **Aortic annulus (2 clicks)** in the A2/P2 cut (or the enlarged one). The angle is between the mitral annulus line in that cut and the aortic annulus line; 180° means the two are in line.
+- **Height reference:** **Picked plane**, **Annulus plane** (best-fit plane of the hinges) or **Saddle**. The saddle reference is the annulus extended smoothly across the orifice, so it matches the annulus at the rim. A flat reference shows the high anterior and posterior horns of a normal saddle as a false prolapse. The traced annulus also becomes the valve outline for the analysis. The cuts show the reference as a dashed yellow line.
+
+### Tenting (functional MR/TR)
+
+Leaflet below the reference counts as tenting, shaded blue in the cuts and the map. Read it in mid-systole with the valve closed.
+
+- **Max tenting height** and the segment it is in, and **tenting volume** (mL) between the reference and the leaflets, also per segment.
+- **Per cut:** tenting area (between the reference and the leaflets) and coaptation depth (deepest leaflet within 3 mm of the coaptation point). The cut with the largest tenting area is shown in the panel.
+- **Reference values:** markers of recurrent functional MR after ring annuloplasty include coaptation depth ≥ 1 cm and tenting area ≥ 2.5 cm² (cut-offs vary between studies). For the TV, Fukuda et al. reported tethering distance > 0.76 cm and tethering area > 1.63 cm² as predictors of residual TR after annuloplasty.
+
+### Over the cycle
+
+**Analyse the cycle** measures every frame with the current points, threshold and reference. It charts the highest leaflet point, the widest coaptation gap, the tenting volume and the orifice area per frame. Click a chart to go to a frame.
+
+- **Jumps:** **Worst prolapse**, **Widest gap**, **Most tenting**, **Largest orifice**, and **R wave** when the DICOM has an ECG.
+- **Closed vs open frames:** a frame counts as closed (shaded) when the leaflets cover nearly as much of the valve as in the best frame and it has no orifice comparable with the largest. The prolapse, gap and tenting jumps only look at closed frames; the orifice only at open ones.
+- **ECG:** R waves are detected in the DICOM waveform (Pan–Tompkins style: slope energy, adaptive threshold, 250 ms refractory period). They are marked on the ECG strip and the charts, and give the heart rate when the file does not.
+
+The points and the annulus are fixed; they do not follow the valve through the cycle.
 
 ## TV slicer
 
@@ -86,7 +116,7 @@ Orientation:
 - **RA→RV:** worked out from the commissure order. Seen from the RA, A–S → A–P → P–S runs clockwise. **Flip RA/RV** overrides it.
 - **Key map:** an en-face view from the RA with the septal leaflet at 6 o'clock.
 
-The prolapse map, per-cut gaps and point dragging work as in the MV slicer.
+The prolapse map, per-cut gaps, point dragging, the 3D annulus, tenting and the cycle analysis work as in the MV slicer.
 
 ## Local development
 

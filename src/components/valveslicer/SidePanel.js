@@ -1,53 +1,24 @@
 import React from 'react';
 import styled from 'styled-components';
 import { CLIP_DEVICES, PROLAPSE_MM, TEER_STEPS, teerCriteria } from '../../utils/valveAnalysis';
+import { REFERENCES } from '../../utils/annulusFit';
+import { AnnulusSection, CycleSection, TentingSection } from './AnnulusPanel';
 import { HEIGHT_RANGE, heightGradientCss } from './KeyMap';
+import {
+  Section,
+  SectionHead,
+  SmallButton,
+  Row,
+  Table,
+  Bad,
+  Good,
+  Warn,
+  Steps,
+  SmallSelect,
+  Note,
+} from './panelStyles';
 
-const Section = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  padding-top: 0.45rem;
-  border-top: 1px solid #383838;
-`;
-
-const SectionHead = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.4rem;
-  font-size: 0.66rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #9e9e9e;
-  font-weight: 600;
-`;
-
-export const SmallButton = styled.button`
-  background: ${(p) => (p.$active ? '#4caf50' : '#383838')};
-  border: 1px solid ${(p) => (p.$active ? '#4caf50' : '#4a4a4a')};
-  color: #fff;
-  border-radius: 5px;
-  padding: 0.18rem 0.45rem;
-  font-size: 0.7rem;
-  cursor: pointer;
-
-  &:hover {
-    background: ${(p) => (p.$active ? '#45a049' : '#4a4a4a')};
-  }
-
-  &:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-`;
-
-const Row = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-`;
+export { SmallButton };
 
 const Legend = styled.div`
   height: 8px;
@@ -65,72 +36,6 @@ const LegendTicks = styled.div`
     position: absolute;
     transform: translateX(-50%);
   }
-`;
-
-const Table = styled.table`
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.68rem;
-  font-variant-numeric: tabular-nums;
-
-  th {
-    text-align: left;
-    color: #9e9e9e;
-    font-weight: 600;
-    padding: 0.1rem 0.2rem;
-  }
-  td {
-    padding: 0.1rem 0.2rem;
-    border-top: 1px solid #2e2e2e;
-  }
-  tr.clickable {
-    cursor: pointer;
-  }
-  tr.clickable:hover td {
-    background: #2e2e2e;
-  }
-`;
-
-const Bad = styled.span`
-  color: #ff6e6e;
-  font-weight: 600;
-`;
-const Good = styled.span`
-  color: #81c784;
-`;
-const Warn = styled.span`
-  color: #ffb74d;
-`;
-
-const Steps = styled.ol`
-  margin: 0;
-  padding-left: 1.1rem;
-  font-size: 0.68rem;
-  line-height: 1.45;
-
-  li.done {
-    color: #81c784;
-  }
-  li.current {
-    color: #fff;
-    font-weight: 600;
-  }
-`;
-
-const SmallSelect = styled.select`
-  background: #383838;
-  border: 1px solid #4a4a4a;
-  color: #fff;
-  border-radius: 5px;
-  padding: 0.15rem 0.3rem;
-  font-size: 0.7rem;
-  max-width: 100%;
-`;
-
-const Note = styled.div`
-  font-size: 0.64rem;
-  line-height: 1.4;
-  color: #9e9e9e;
 `;
 
 const mm = (v, d = 1) => (v == null ? '–' : `${v.toFixed(d)} mm`);
@@ -156,8 +61,8 @@ function ProlapseSection({ result, frame, showHeights, setShowHeights }) {
         ))}
       </LegendTicks>
       <Note>
-        Leaflet height above the plane of your points, in mm (towards the{' '}
-        {result.kind === 'tv' ? 'RA' : 'LA'} is positive). Prolapse: &gt; {PROLAPSE_MM} mm.
+        Leaflet height above the {(REFERENCES.find((r) => r.id === stats.reference) || REFERENCES[0]).short}, in mm
+        (towards the {result.kind === 'tv' ? 'RA' : 'LA'} is positive). Prolapse: &gt; {PROLAPSE_MM} mm.
       </Note>
       <div>
         Max{' '}
@@ -209,6 +114,7 @@ function CutsSection({ result, frame, onOpenCut }) {
             <th>Cut</th>
             <th>Max</th>
             <th>Gap</th>
+            <th title="Depth of the leaflets below the reference at the coaptation">Tent</th>
           </tr>
         </thead>
         <tbody>
@@ -221,6 +127,7 @@ function CutsSection({ result, frame, onOpenCut }) {
                 <td>{cut.label}</td>
                 <td>{pro ? <Bad>{mm(p.maxHeight)}</Bad> : mm(p.maxHeight)}</td>
                 <td>{p.gapMm > 0 ? <Warn>{mm(p.gapMm)}</Warn> : '–'}</td>
+                <td>{p.tentingHeightMm > 0.5 ? mm(p.tentingHeightMm) : '–'}</td>
               </tr>
             );
           })}
@@ -332,15 +239,25 @@ function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCoun
       ) : null}
 
       <Row>
-        <SmallButton type="button" onClick={analysis.runMva} title="Planimetry of the orifice in every frame">
-          {analysis.cycle ? 'Recompute MVA' : 'Find MVA over the cycle'}
+        <SmallButton
+          type="button"
+          onClick={analysis.runCycle}
+          disabled={Boolean(analysis.progress)}
+          title="Planimetry of the orifice in every frame (with the rest of the cycle analysis)"
+        >
+          {analysis.progress
+            ? `Analysing ${analysis.progress.done}/${analysis.progress.total}…`
+            : analysis.cycle
+              ? 'Recompute MVA'
+              : 'Find MVA over the cycle'}
         </SmallButton>
       </Row>
       {analysis.cycle ? (
         orifice ? (
           <div>
             MVA <strong>{(orifice.areaMm2 / 100).toFixed(2)} cm²</strong> at T{analysis.cycle.bestFrame + 1}/
-            {frameCount}, {orifice.depthMm.toFixed(1)} mm below the valve plane
+            {frameCount}, {orifice.depthMm.toFixed(1)} mm below the{' '}
+            {(REFERENCES.find((r) => r.id === result.reference) || REFERENCES[0]).short}
             {analysis.cycle.bestFrame !== timeIndex ? ' (go to that frame to see it)' : ''}
           </div>
         ) : (
@@ -419,13 +336,23 @@ function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCoun
 }
 
 export default function SidePanel(props) {
-  const { result, analysis, showHeights, setShowHeights, onOpenCut } = props;
+  const { result, analysis, showHeights, setShowHeights, onOpenCut, annulus, timeIndex, frameCount, onSeek, rFrames } =
+    props;
   const { frame } = analysis;
   if (!frame) return null;
   return (
     <>
+      <AnnulusSection result={result} annulus={annulus} />
       <ProlapseSection result={result} frame={frame} showHeights={showHeights} setShowHeights={setShowHeights} />
+      <TentingSection result={result} frame={frame} onOpenCut={onOpenCut} />
       <CutsSection result={result} frame={frame} onOpenCut={onOpenCut} />
+      <CycleSection
+        analysis={analysis}
+        timeIndex={timeIndex}
+        frameCount={frameCount}
+        onSeek={onSeek}
+        rFrames={rFrames}
+      />
       <ThresholdSection analysis={analysis} />
       {result.kind === 'mv' ? <TeerSection {...props} frame={frame} /> : null}
     </>

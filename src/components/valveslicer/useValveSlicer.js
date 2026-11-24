@@ -3,7 +3,9 @@ import { moveKeepingDepth } from '../../utils/mvSlicer';
 
 /**
  * State of a valve slicer (MV or TV): the picked points, the normal of the
- * view they were picked in, display options, and whether the cut view is open.
+ * view they were picked in, display options, whether the cut view is open,
+ * and the annulus traced in the cuts. Annulus hinges are kept in world mm, so
+ * they stay valid when the points are adjusted and the cuts move.
  *
  * @param {{volume, pointDefs: {key,label,short,color}[], build: Function}} config
  *   `build(points, viewNormal, options)` returns the slicer result.
@@ -15,11 +17,18 @@ export default function useValveSlicer({ volume, pointDefs, build }) {
   const [flipVertical, setFlipVertical] = useState(false);
   const [mirror, setMirror] = useState(false);
   const [open, setOpen] = useState(false);
+  // Annulus hinges: { p: world mm, cut: cut index, side: 'L' | 'R', t: frame }
+  const [hinges, setHinges] = useState([]);
+  // Aortic annulus hinges in one cut (MV): { cut, t, pts: [p1, p2] }
+  const [aortic, setAortic] = useState(null);
+  const [reference, setReference] = useState('saddle');
 
   useEffect(() => {
     setPoints({});
     setViewNormal(null);
     setOpen(false);
+    setHinges([]);
+    setAortic(null);
   }, [volume]);
 
   const next = pointDefs.find((p) => !points[p.key]) || null;
@@ -70,6 +79,8 @@ export default function useValveSlicer({ volume, pointDefs, build }) {
     setPoints({});
     setViewNormal(null);
     setOpen(false);
+    setHinges([]);
+    setAortic(null);
   };
 
   /** What the 2D panes draw. */
@@ -106,5 +117,11 @@ export default function useValveSlicer({ volume, pointDefs, build }) {
     undo,
     clear,
     overlay,
+    hinges,
+    setHinges,
+    aortic,
+    setAortic,
+    reference,
+    setReference,
   };
 }

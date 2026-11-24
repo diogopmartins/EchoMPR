@@ -13,6 +13,8 @@ import {
   PROLAPSE_MM,
   clipSiteForCut,
   cutProfile,
+  cycleJumps,
+  frameMetrics,
   estimateThreshold,
   heightMap,
   makeSampler,
@@ -164,5 +166,48 @@ describe('tricuspid gap', () => {
       expect(p.gapMm).toBeLessThan(TV_GAP_MM + 1);
     });
     profiles.slice(3).forEach((p) => expect(p.gapMm).toBe(0));
+  });
+});
+
+describe('cycle metrics', () => {
+  test('jumps to the systolic prolapse and the diastolic orifice', () => {
+    const vol = mitralPhantom();
+    const result = buildMvSlicer(MV_POINTS, [0, 0, 1]);
+    const frames = [0, 1].map((t) => {
+      const sample = makeSampler(vol, t);
+      return frameMetrics(sample, result, estimateThreshold(sample, result).threshold);
+    });
+    expect(frames[1].maxHeightMm).toBeGreaterThan(MV_PROLAPSE_MM - 1);
+    expect(frames[0].orificeMm2).toBeGreaterThan(100);
+    expect(frames[1].orificeMm2).toBeNull();
+    const jumps = cycleJumps(frames);
+    expect(jumps.maxProlapse).toBe(1);
+    expect(jumps.largestOrifice).toBe(0);
+  });
+
+  test('systolic jumps skip open frames; the orifice skips closed ones', () => {
+    const frames = [
+      { coverage: 0.62, maxHeightMm: 0.5, gapMm: 12, tentingVolumeMm3: 300, orificeMm2: 170 },
+      { coverage: 1, maxHeightMm: 0.6, gapMm: 0, tentingVolumeMm3: 2000, orificeMm2: null },
+      { coverage: 0.92, maxHeightMm: 0.7, gapMm: 3, tentingVolumeMm3: 900, orificeMm2: 43 },
+      // Nearly covered but with an orifice half the diastolic one: still open
+      { coverage: 0.9, maxHeightMm: 0.5, gapMm: 7, tentingVolumeMm3: 200, orificeMm2: 88 },
+    ];
+    const j = cycleJumps(frames);
+    expect(j.closed).toEqual([false, true, true, false]);
+    expect(j.maxProlapse).toBe(2);
+    expect(j.widestGap).toBe(2);
+    expect(j.maxTenting).toBe(1);
+    expect(j.largestOrifice).toBe(0);
+  });
+
+  test('a flat closed valve has no tenting', () => {
+    const vol = mitralPhantom();
+    const result = buildMvSlicer(MV_POINTS, [0, 0, 1]);
+    const sample = makeSampler(vol, 1);
+    const map = heightMap(sample, result, estimateThreshold(sample, result).threshold);
+    // Only the leaflet thickness sits below the plane
+    expect(map.stats.maxTentingMm).toBeLessThan(1);
+    expect(map.stats.tentingVolumeMm3).toBeLessThan(0.2 * map.stats.foundAreaMm2);
   });
 });
