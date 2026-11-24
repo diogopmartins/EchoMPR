@@ -25,13 +25,24 @@ import { add, cross, dot, mmToVoxel, normalize, scale, spacingMm, sub, vecLen } 
 import { getVolumeAtTime } from './philipsVolume';
 
 export const MV_POINTS = [
-  { key: 'al', label: 'AL commissure', short: 'AL' },
-  { key: 'mid', label: 'Middle of coaptation (A2–P2)', short: 'Mid' },
-  { key: 'pm', label: 'PM commissure', short: 'PM' },
-  { key: 'ao', label: 'Aortic valve centre', short: 'Ao' },
+  { key: 'al', label: 'AL commissure', short: 'AL', color: '#ffb74d' },
+  { key: 'mid', label: 'Middle of coaptation (A2–P2)', short: 'Mid', color: '#ffb74d' },
+  { key: 'pm', label: 'PM commissure', short: 'PM', color: '#ffb74d' },
+  { key: 'ao', label: 'Aortic valve centre', short: 'Ao', color: '#e57373' },
 ];
 
 export const MV_CUT_COUNT = 9;
+
+/** Colours of the picked points, shared by the 2D panes and the key map. */
+export const POINT_COLORS = {
+  al: '#ffb74d',
+  mid: '#ffb74d',
+  pm: '#ffb74d',
+  ao: '#e57373',
+};
+
+/** Carpentier segments, in the order the analysis reports them. */
+export const MV_SEGMENTS = ['A1', 'A2', 'A3', 'P1', 'P2', 'P3'];
 
 /** Margins around the anatomy in each cut, in mm. */
 const MARGIN = {
@@ -142,6 +153,10 @@ export function buildMvSlicer(points, viewNormal, options = {}) {
   const aoHeight = dot(sub(ao, c0), laToLv);
 
   const { targets, lengthMm, curve } = coaptationTargets(A, M, P, count);
+  // Direction of the coaptation line at each target (for the virtual clip).
+  const tangents = targets.map((t, k) =>
+    normalize(sub(targets[Math.min(count - 1, k + 1)], targets[Math.max(0, k - 1)]))
+  );
 
   const yMin = Math.min(-MARGIN.la, aoHeight - 12);
   const yMax = Math.max(MARGIN.lv, aoHeight + 12);
@@ -197,9 +212,50 @@ export function buildMvSlicer(points, viewNormal, options = {}) {
     });
   }
 
+  // Valve outline used for the analysis: a D shape through the commissures,
+  // deeper on the anterior side (the coaptation line sits posteriorly). The
+  // anterior extent stops short of the aortic root.
+  const roiCenter = scale(add(A, P), 0.5);
+  const cc = vecLen(sub(P, A));
+  const aoFromChord = dot(sub(AO, roiCenter), ant);
+  const semi = cc / 2 + 1.5;
+  const antExtent = Math.max(6, Math.min(0.45 * cc, aoFromChord - 8));
+  const postExtent = Math.max(5, 0.3 * cc);
+  const roiPolygon = [];
+  for (let i = 0; i < 72; i++) {
+    const th = (2 * Math.PI * i) / 72;
+    const u = semi * Math.cos(th);
+    const v = Math.sin(th) * (Math.sin(th) > 0 ? postExtent : antExtent);
+    roiPolygon.push(add(add(roiCenter, scale(chord, u)), scale(post, v)));
+  }
+
+  // Segment lookup: thirds along the commissural line from AL (1) to PM (3);
+  // anterior or posterior of the coaptation curve.
+  const curveUV = curve
+    .map((p) => ({ u: dot(sub(p, A), chord), v: dot(sub(p, A), post) }))
+    .sort((a, b) => a.u - b.u);
+  const coaptVAt = (u) => {
+    if (u <= curveUV[0].u) return curveUV[0].v;
+    for (let i = 1; i < curveUV.length; i++) {
+      if (curveUV[i].u >= u) {
+        const a = curveUV[i - 1];
+        const b = curveUV[i];
+        const f = (u - a.u) / (b.u - a.u || 1);
+        return a.v + f * (b.v - a.v);
+      }
+    }
+    return curveUV[curveUV.length - 1].v;
+  };
+  const segmentAt = (q) => {
+    const u = dot(sub(q, A), chord);
+    const v = dot(sub(q, A), post);
+    const third = Math.max(0, Math.min(2, Math.floor((3 * u) / cc)));
+    return `${v < coaptVAt(u) ? 'A' : 'P'}${third + 1}`;
+  };
+
   // En-face key map at valve level: AL on the left, AoV at the top (surgical view).
   const keyCenter = scale(add(add(A, P), AO), 1 / 3);
-  const keyPts = [A, P, AO, M, ...cuts.flatMap((c) => c.segment)];
+  const keyPts = [A, P, AO, M, ...roiPolygon, ...cuts.flatMap((c) => c.segment)];
   const kx = keyPts.map((p) => dot(sub(p, keyCenter), chord));
   const ky = keyPts.map((p) => dot(sub(p, keyCenter), post));
   const keyMap = {
@@ -213,8 +269,31 @@ export function buildMvSlicer(points, viewNormal, options = {}) {
     slabDir: laToLv,
   };
 
+  const sideLabels = mirror ? { left: 'A', right: 'P' } : { left: 'P', right: 'A' };
+  const leafletNames = mirror
+    ? { left: 'anterior', right: 'posterior' }
+    : { left: 'posterior', right: 'anterior' };
+  cuts.forEach((c, k) => {
+    c.sideLabels = sideLabels;
+    c.leaflets = leafletNames;
+    c.coaptDir = tangents[k];
+  });
+
   return {
     ok: true,
+    kind: 'mv',
+    title: 'MV slicer',
+    modeText: mode === 'parallel' ? 'Parallel cuts' : 'Fan through the AoV',
+    keyPoints: [
+      { key: 'al', text: 'AL', color: POINT_COLORS.al, point: A },
+      { key: 'mid', text: 'Mid', color: POINT_COLORS.mid, point: M },
+      { key: 'pm', text: 'PM', color: POINT_COLORS.pm, point: P },
+      { key: 'ao', text: 'Ao', color: POINT_COLORS.ao, point: AO },
+    ],
+    guides: [{ points: curve, closed: false }],
+    roiPolygon,
+    segmentAt,
+    segments: MV_SEGMENTS,
     mode,
     count,
     normal: n,

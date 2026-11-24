@@ -9,7 +9,8 @@ Browser-based **multi-planar reconstruction (MPR)** and 3D volume viewing for **
 - Slice scroll (mouse wheel), temporal cine
 - GPU volume rendering (MIP or alpha composite) with optional cut planes
 - Export current timepoint as NRRD
-- MV slicer: nine long-axis cuts across the mitral valve to find prolapsing scallops
+- MV slicer: nine long-axis cuts across the mitral valve to find prolapsing scallops, with a prolapse height map, per-cut measurements and TEER planning
+- TV slicer: cuts across each tricuspid coaptation line, with prolapse and coaptation-gap measurements
 - No server: files never leave the browser
 
 ## Supported data
@@ -49,6 +50,43 @@ How the cuts are placed:
 - **Valve-level line:** a dashed line marks the level the points were picked at. Leaflet tissue above it towards the LA in systole suggests prolapse.
 - **Key map:** a surgical-view map (valve-level 10 mm slab) shows where each numbered cut runs. Click a line to open that cut.
 - **Editing points:** drag **AL**, **Mid**, **PM** or **Ao** in the key map to adjust them; the cuts update as you drag. Each point keeps its height above or below the valve, and moves that would make the cuts impossible (such as AL onto PM) are ignored.
+
+### Prolapse map and per-cut measurements
+
+The app follows the valve axis from the atrial side and takes the first voxel bright enough to be tissue as the leaflet's atrial surface. Two consecutive samples must be above the tissue threshold, so single speckles are ignored. The threshold is set per frame, halfway between blood and leaflet tissue, and can be overridden in the side panel. Heights are measured from the plane of the picked points, so pick them at the annulus level.
+
+- **Prolapse map:** leaflet height over the valve outline as a colour scale (red = towards the atrium), on the surgical-view map. Prolapse is a height over 2 mm. It reports the maximum, the area above 2 mm, the width along the coaptation line, and a table per segment (A1–P3 for the MV, A/S/P for the TV).
+- **Per-cut measurements:** each cut shows the traced leaflet (red where above 2 mm), its maximum height and which leaflet, the length of the prolapsing part, and the **coaptation gap**. The gap is the stretch without tissue at the coaptation point, bounded by leaflets on both sides.
+
+### TEER planning (MV)
+
+- **Measure:** opens a cut (default A2/P2). Click, in order:
+  1. the posterior hinge (annulus)
+  2. the anterior hinge (annulus)
+  3. the coaptation point (first contact)
+  4. the posterior leaflet tip
+  5. the anterior leaflet tip
+
+  This gives the leaflet lengths, the annulus in that cut, coaptation depth (from the hinge line) and length, and the tip-to-tip gap.
+- **Find MVA over the cycle:** in every frame, the planes between the valve level and 15 mm towards the LV are flood-filled from the coaptation centre. Regions that reach the valve outline are not enclosed by leaflets and are skipped. The smallest enclosed area per frame is the orifice, and the largest over the cycle is reported as the MVA.
+- **Virtual clip:** closes a band across the orifice at the chosen cut. The band is the device width (4, 6 or 10 mm) plus 2 mm of approximated tissue on each side. This is a rough geometric estimate, not a validated predictor.
+- **Criteria:** a table checks the values against the EVEREST anatomical criteria: coaptation length ≥ 2 mm, coaptation depth ≤ 11 mm, flail gap < 10 mm, flail width < 15 mm, posterior leaflet ≥ 10 mm, MVA ≥ 4.0 cm².
+
+## TV slicer
+
+1. Make one 2D view en-face to the tricuspid valve at the annulus level.
+2. In **TV slicer**, press **Pick points** and click:
+   1. the anteroseptal (A–S) commissure
+   2. the posteroseptal (P–S) commissure
+   3. the anteroposterior (A–P) commissure
+   4. the centre of coaptation
+3. Nine cuts open: three across each coaptation line (A–S, P–S, A–P) at ¼, ½ and ¾ of its length. Each cut is perpendicular to the line, so it shows the two leaflets that meet there.
+
+Orientation:
+- **RA→RV:** worked out from the commissure order. Seen from the RA, A–S → A–P → P–S runs clockwise. **Flip RA/RV** overrides it.
+- **Key map:** an en-face view from the RA with the septal leaflet at 6 o'clock.
+
+The prolapse map, per-cut gaps and point dragging work as in the MV slicer.
 
 ## Local development
 

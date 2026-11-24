@@ -1,35 +1,47 @@
 /**
- * Draw the MV slicer on a 2D MPR pane: picked points, and on an en-face pane
- * the coaptation curve and the numbered cut lines (the key map).
+ * Draw a valve slicer on a 2D MPR pane: the picked points, and on an en-face
+ * pane the guide lines (coaptation) and the numbered cut lines.
  */
-const POINT_COLORS = { al: '#ffb74d', mid: '#ffb74d', pm: '#ffb74d', ao: '#e57373' };
 export const CUT_COLOR = '#4caf50';
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 
-export default function drawMvOverlay(ctx, mv, { toCssMm, planePoint, planeNormal, tolMm }) {
-  if (!mv) return;
+/** End of a cut line to put its number on: the end away from the anchor point. */
+export function labelEnd(a, b, anchor) {
+  if (!anchor) return b;
+  const da = Math.hypot(a.x - anchor.x, a.y - anchor.y);
+  const db = Math.hypot(b.x - anchor.x, b.y - anchor.y);
+  return Math.abs(da - db) < 1 ? b : da > db ? a : b;
+}
+
+/** Point the cut numbers are placed away from (the AoV for MV, the centre for TV). */
+export function labelAnchor(result) {
+  return result.kind === 'mv' ? result.projected.ao : result.projected.c;
+}
+
+export default function drawSlicerOverlay(ctx, overlay, { toCssMm, planePoint, planeNormal, tolMm }) {
+  if (!overlay) return;
   ctx.save();
-  const result = mv.result;
+  const { result } = overlay;
   const enFace = result && Math.abs(dot(result.normal, planeNormal)) > 0.8;
 
   if (enFace) {
-    // Coaptation curve
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
     ctx.lineWidth = 1.2;
     ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    result.coaptationCurve.forEach((p, i) => {
-      const c = toCssMm(p);
-      if (i === 0) ctx.moveTo(c.x, c.y);
-      else ctx.lineTo(c.x, c.y);
+    result.guides.forEach((g) => {
+      ctx.beginPath();
+      g.points.forEach((p, i) => {
+        const c = toCssMm(p);
+        if (i === 0) ctx.moveTo(c.x, c.y);
+        else ctx.lineTo(c.x, c.y);
+      });
+      ctx.stroke();
     });
-    ctx.stroke();
     ctx.setLineDash([]);
 
-    // Cut lines, numbered at the posterior end (farthest from the AoV)
-    const ao = toCssMm(result.projected.ao);
+    const anchor = toCssMm(labelAnchor(result));
     ctx.font = '600 11px Arial, Helvetica, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -42,24 +54,24 @@ export default function drawMvOverlay(ctx, mv, { toCssMm, planePoint, planeNorma
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
-      const far = Math.hypot(a.x - ao.x, a.y - ao.y) > Math.hypot(b.x - ao.x, b.y - ao.y) ? a : b;
+      const end = labelEnd(a, b, anchor);
       ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
       ctx.beginPath();
-      ctx.arc(far.x, far.y, 8, 0, Math.PI * 2);
+      ctx.arc(end.x, end.y, 8, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(String(cut.index), far.x, far.y + 0.5);
+      ctx.fillText(String(cut.index), end.x, end.y + 0.5);
     });
   }
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
   ctx.font = '600 11px Arial, Helvetica, sans-serif';
-  mv.points.forEach((p) => {
+  overlay.points.forEach((p) => {
     const dist = Math.abs(dot(sub(p.mm, planePoint), planeNormal));
     if (!enFace && dist > tolMm) return;
     const c = toCssMm(p.mm);
-    ctx.fillStyle = POINT_COLORS[p.key];
+    ctx.fillStyle = p.color;
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 1.5;
     ctx.beginPath();

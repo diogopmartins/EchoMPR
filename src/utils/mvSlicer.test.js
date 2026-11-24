@@ -265,3 +265,21 @@ describe('editing points in the key map', () => {
     expect(vecLen(sub(r2.cuts[0].right, r.cuts[0].right))).toBeGreaterThan(0.05);
   });
 });
+
+describe('MV segments and outline', () => {
+  const r = buildMvSlicer(POINTS, [0, 0, 1]);
+  test('segmentAt follows Carpentier: 1 at AL, 3 at PM, A anterior of coaptation', () => {
+    expect(r.segmentAt([24, 34, 20])).toBe('P2');
+    expect(r.segmentAt([24, 22, 20])).toBe('A2');
+    expect(r.segmentAt([14, 33, 20])).toBe('P1');
+    expect(r.segmentAt([34, 23, 20])).toBe('A3');
+  });
+  test('outline passes through the commissures and stops short of the AoV', () => {
+    const ys = r.roiPolygon.map((p) => p[1]);
+    const xs = r.roiPolygon.map((p) => p[0]);
+    expect(Math.min(...xs)).toBeCloseTo(12 - 1.5, 1);
+    expect(Math.max(...xs)).toBeCloseTo(36 + 1.5, 1);
+    expect(Math.min(...ys)).toBeGreaterThan(8 + 7); // anterior edge short of the aortic ring
+    expect(Math.max(...ys)).toBeGreaterThan(36); // posterior annulus at y = 38
+  });
+});
