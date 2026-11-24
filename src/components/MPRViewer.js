@@ -60,6 +60,10 @@ import {
 import VolumeRenderer, { STYLE_BG } from './VolumeRenderer';
 import { encodeMjpegAvi } from '../utils/aviEncoder';
 import { valveUrl } from '../utils/exampleStudy';
+import { MV_POINTS } from '../utils/mvSlicer';
+import useMvSlicer from './mvslicer/useMvSlicer';
+import drawMvOverlay from './mvslicer/drawMvOverlay';
+import MvSlicerView from './mvslicer/MvSlicerView';
 import {
   captureElementToCanvas,
   canvasToBlob,
@@ -319,6 +323,24 @@ const MeasureMetaLine = styled.span`
   color: #c8c8c8;
 `;
 
+const MvSteps = styled.ol`
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+`;
+
+const MvStep = styled.li`
+  font-size: 0.75rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  color: ${(p) => (p.$done ? '#4caf50' : p.$current ? '#ffffff' : '#c8c8c8')};
+  background: ${(p) => (p.$current ? 'rgba(76, 175, 80, 0.25)' : 'transparent')};
+  border: 1px solid ${(p) => (p.$current ? '#4caf50' : 'transparent')};
+`;
+
 const MeasureDelete = styled.span`
   display: inline-flex;
   align-items: center;
@@ -488,6 +510,7 @@ const DEVICE_MODELS = {
 
 const DEFAULT_SECTIONS = {
   cine: true,
+  mvslicer: true,
   tools: true,
   measure: true,
   planes: true,
@@ -754,6 +777,9 @@ function MPRSlicePane({
   onAnchorPlace,
   onAnchorPoint,
   onAnchorCommit,
+  mvSlicer = null,
+  mvNext = null,
+  onMvPoint,
 }) {
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
@@ -969,6 +995,19 @@ function MPRSlicePane({
         else drawArea(draft.points, draft.cursor, true);
       }
 
+      if (mvSlicer) {
+        const sp = volume.spacingCm;
+        drawMvOverlay(ctx, mvSlicer, {
+          toCssMm: (mm) => {
+            const im = worldMmToImage(volume, s, mm);
+            return toCss(im.u, im.v);
+          },
+          planePoint: voxelToMm(volume, mprCenter),
+          planeNormal: mprBasis[viewSpec(axis).normalKey],
+          tolMm: Math.max(sp.x, sp.y, sp.z) * 15,
+        });
+      }
+
       if (valvePose && (valvePositions || profilePositions)) {
         const frames = valveFrames(volume, mprCenter, mprBasis, valvePose);
         const spec = viewSpec(axis);
@@ -1051,6 +1090,7 @@ function MPRSlicePane({
       valvePose,
       valvePositions,
       volume,
+      mvSlicer,
     ]
   );
 
@@ -1211,7 +1251,7 @@ function MPRSlicePane({
 
   const hitMeasurement = (pos) => {
     const slice = sliceRef.current;
-    if (!slice || !pos || draftRef.current) return null;
+    if (!slice || !pos || draftRef.current || tool === 'mvslicer') return null;
     const vis = visibleMeasurements();
     let bestPt = null;
     let bestPtD = 10;
@@ -1336,6 +1376,15 @@ function MPRSlicePane({
         angle0: Math.atan2(dotVec(rel, axes.down), dotVec(rel, axes.right)),
       };
       e.currentTarget.style.cursor = spinning ? 'grabbing' : 'move';
+      return;
+    }
+
+    if (tool === 'mvslicer') {
+      clickStartRef.current.consumed = true;
+      onMvPoint?.(
+        imageToWorldMm(volume, slice, pos.imgU, pos.imgV),
+        basisRef.current[viewSpec(axis).normalKey]
+      );
       return;
     }
 
@@ -1492,6 +1541,11 @@ function MPRSlicePane({
       return;
     }
 
+    if (tool === 'mvslicer') {
+      e.currentTarget.style.cursor = 'crosshair';
+      return;
+    }
+
     if (tool !== 'navigate' && tool !== 'valve') {
       const hover = hitMeasurement(pos);
       e.currentTarget.style.cursor = hover ? 'grab' : 'crosshair';
@@ -1609,7 +1663,11 @@ function MPRSlicePane({
 
   const planeColor = AXIS_META[axis].color;
   const hint =
-    tool === 'distance'
+    tool === 'mvslicer'
+      ? mvNext
+        ? `MV slicer: click the ${mvNext.label} (an en-face view of the valve works best)`
+        : 'MV slicer: all points placed'
+      : tool === 'distance'
       ? 'Click two points to measure length · Drag points to edit'
       : tool === 'area'
         ? 'Click to add points · Double-click or Enter to close · Drag points to edit · Esc cancel'
@@ -1823,14 +1881,17 @@ function EcgStrip({ ecg, timeIndex, frameCount, onSeek }) {
   );
 }
 
+// Fixed 3D lighting.
+const LIGHT_AZIMUTH = 38;
+const LIGHT_ELEVATION = 42;
+const LIGHT_INTENSITY = 1.55;
+
 const MPRViewer = () => {
   const {
     volume,
     currentImage,
     timeIndex,
     setTimeIndex,
-    crosshair,
-    setCrosshair,
     mprCenter,
     mprBasis,
     setMprCenter,
@@ -1838,7 +1899,6 @@ const MPRViewer = () => {
     resetMprOrientation,
     windowCenter,
     windowWidth,
-    setWindowLevel,
   } = useEcho();
 
   const [playing, setPlaying] = useState(false);
@@ -1850,9 +1910,6 @@ const MPRViewer = () => {
   const [cropPlaneKey, setCropPlaneKey] = useState('z');
   const [cropFlip, setCropFlip] = useState(false);
   const [showMprLines, setShowMprLines] = useState(true);
-  const [lightAzimuth, setLightAzimuth] = useState(38);
-  const [lightElevation, setLightElevation] = useState(42);
-  const [lightIntensity, setLightIntensity] = useState(1.55);
   const [zoom, setZoom] = useState(1.5);
   const [slabMm, setSlabMm] = useState(0);
   const [slabMode, setSlabMode] = useState('mean');
@@ -1886,6 +1943,7 @@ const MPRViewer = () => {
   const [liveDraft, setLiveDraft] = useState(null);
   const [clearDraftSignal, setClearDraftSignal] = useState(0);
   const [maximizedPane, setMaximizedPane] = useState(null);
+  const mv = useMvSlicer({ volume });
   const [cameraResetToken, setCameraResetToken] = useState(0);
   const [exporting, setExporting] = useState(null);
   const [openSections, setOpenSections] = useState(DEFAULT_SECTIONS);
@@ -2330,43 +2388,88 @@ const MPRViewer = () => {
         </SidebarSection>
 
         <SidebarSection
+          title="MV slicer"
+          open={openSections.mvslicer}
+          onToggle={() => toggleSection('mvslicer')}
+        >
+          <MeasureMetaLine>
+            Tilt the planes to an en-face view of the mitral valve at the annulus level, then click:
+          </MeasureMetaLine>
+          <MvSteps>
+            {MV_POINTS.map((p, i) => (
+              <MvStep
+                key={p.key}
+                $done={Boolean(mv.points[p.key])}
+                $current={tool === 'mvslicer' && mv.next?.key === p.key}
+              >
+                {mv.points[p.key] ? '✓' : `${i + 1}.`} {p.label}
+              </MvStep>
+            ))}
+          </MvSteps>
+          <ButtonRow>
+            <Button
+              $grow
+              $active={tool === 'mvslicer'}
+              onClick={() => {
+                if (mv.complete) mv.clear();
+                mv.setOpen(false);
+                setTool('mvslicer');
+              }}
+              title="Click the four points in a 2D view"
+            >
+              {mv.placedCount && !mv.complete ? 'Continue' : 'Pick points'}
+            </Button>
+            <Button $grow onClick={mv.undo} disabled={!mv.placedCount} title="Remove the last point">
+              Undo
+            </Button>
+            <Button
+              $grow
+              onClick={() => {
+                mv.clear();
+                if (tool === 'mvslicer') setTool('navigate');
+              }}
+              disabled={!mv.placedCount}
+              title="Remove all four points"
+            >
+              Clear
+            </Button>
+          </ButtonRow>
+          <SliderRow>
+            <Label $wide="3.2rem">Cuts</Label>
+            <Select
+              value={mv.mode}
+              onChange={(e) => mv.setMode(e.target.value)}
+              title="How the nine cuts are laid out"
+            >
+              <option value="fan">Fan through the AoV</option>
+              <option value="parallel">Parallel</option>
+            </Select>
+          </SliderRow>
+          <Button
+            $grow
+            $active={mv.open}
+            disabled={!mv.result?.ok}
+            onClick={() => mv.setOpen(!mv.open)}
+            title="Show the nine cuts across the valve"
+          >
+            {mv.open ? 'Back to MPR' : 'Show 9 cuts'}
+          </Button>
+          {mv.result && !mv.result.ok ? (
+            <MeasureMetaLine style={{ color: '#e57373' }}>{mv.result.error}</MeasureMetaLine>
+          ) : null}
+          {mv.result?.ok ? (
+            <MeasureMetaLine>
+              Cuts {mv.result.spacingMm.toFixed(1)} mm apart along a{' '}
+              {mv.result.coaptationLengthMm.toFixed(0)} mm coaptation line
+            </MeasureMetaLine>
+          ) : null}
+        </SidebarSection>
+
+        <SidebarSection
           title="Planes"
           open={openSections.planes}
           onToggle={() => toggleSection('planes')}
         >
-          <SliderRow>
-            <Label style={{ color: AXIS_META.sagittal.color }}>X {crosshair.x}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.x - 1}
-              value={crosshair.x}
-              onChange={(e) => setCrosshair({ x: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.sagittal.color }}
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label style={{ color: AXIS_META.coronal.color }}>Y {crosshair.y}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.y - 1}
-              value={crosshair.y}
-              onChange={(e) => setCrosshair({ y: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.coronal.color }}
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label style={{ color: AXIS_META.axial.color }}>Z {crosshair.z}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={volume.dims.z - 1}
-              value={crosshair.z}
-              onChange={(e) => setCrosshair({ z: Number(e.target.value) })}
-              style={{ accentColor: AXIS_META.axial.color }}
-            />
-          </SliderRow>
           <Button
             $grow
             onClick={() => {
@@ -2727,52 +2830,6 @@ const MPRViewer = () => {
         </SidebarSection>
 
         <SidebarSection
-          title="Image"
-          open={openSections.image}
-          onToggle={() => toggleSection('image')}
-        >
-          <SliderRow>
-            <Label $wide="3.6rem">WC {windowCenter}</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={255}
-              value={windowCenter}
-              onChange={(e) =>
-                setWindowLevel({ windowCenter: Number(e.target.value) })
-              }
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label $wide="3.6rem">WW {windowWidth}</Label>
-            <Slider
-              type="range"
-              min={1}
-              max={255}
-              value={windowWidth}
-              onChange={(e) =>
-                setWindowLevel({ windowWidth: Number(e.target.value) })
-              }
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label $wide="4.5rem">Zoom {Math.round(zoom * 100)}%</Label>
-            <Slider
-              type="range"
-              min={0.4}
-              max={4}
-              step={0.05}
-              value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
-              title="MPR zoom"
-            />
-          </SliderRow>
-          <Button $grow onClick={() => setZoom(1.35)} title="Fit default zoom">
-            Fit
-          </Button>
-        </SidebarSection>
-
-        <SidebarSection
           title="Volume"
           open={openSections.volume}
           onToggle={() => toggleSection('volume')}
@@ -2874,40 +2931,6 @@ const MPRViewer = () => {
             <RotateCcw size={14} />
             Reset 3D
           </Button>
-          <SliderRow>
-            <Label>az</Label>
-            <Slider
-              type="range"
-              min={0}
-              max={360}
-              value={lightAzimuth}
-              onChange={(e) => setLightAzimuth(Number(e.target.value))}
-              title="Light azimuth"
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label>el</Label>
-            <Slider
-              type="range"
-              min={-80}
-              max={80}
-              value={lightElevation}
-              onChange={(e) => setLightElevation(Number(e.target.value))}
-              title="Light elevation"
-            />
-          </SliderRow>
-          <SliderRow>
-            <Label>int</Label>
-            <Slider
-              type="range"
-              min={0.2}
-              max={2}
-              step={0.05}
-              value={lightIntensity}
-              onChange={(e) => setLightIntensity(Number(e.target.value))}
-              title="Light intensity"
-            />
-          </SliderRow>
         </SidebarSection>
 
         <SidebarSection
@@ -2993,6 +3016,14 @@ const MPRViewer = () => {
             onAnchorPlace={placeAnchor}
             onAnchorPoint={moveAnchorPoint}
             onAnchorCommit={commitTrack}
+            mvSlicer={mv.overlay}
+            mvNext={mv.next}
+            onMvPoint={(mm, normal) => {
+              if (mv.addPoint(mm, normal)) {
+                setTool('navigate');
+                mv.setOpen(true);
+              }
+            }}
             onValveGestureStart={() => {
               anchorGesture.current = valveKeys.length
                 ? valveKeys.map((key) => ({
@@ -3119,9 +3150,9 @@ const MPRViewer = () => {
               showMprLines={showMprLines}
               mprCenter={mprCenter}
               mprBasis={mprBasis}
-              lightAzimuth={lightAzimuth}
-              lightElevation={lightElevation}
-              lightIntensity={lightIntensity}
+              lightAzimuth={LIGHT_AZIMUTH}
+              lightElevation={LIGHT_ELEVATION}
+              lightIntensity={LIGHT_INTENSITY}
               measurements={measurements}
               selectedMeasurementId={selectedMeasurementId}
               liveDraft={liveDraft}
@@ -3132,6 +3163,21 @@ const MPRViewer = () => {
             />
           </Canvas>
         </Pane>
+        {mv.open && mv.result?.ok ? (
+          <MvSlicerView
+            volume={volume}
+            timeIndex={timeIndex}
+            frameCount={volume.dims.t}
+            result={mv.result}
+            windowCenter={windowCenter}
+            windowWidth={windowWidth}
+            flipVertical={mv.flipVertical}
+            mirror={mv.mirror}
+            onFlip={() => mv.setFlipVertical((v) => !v)}
+            onMirror={() => mv.setMirror((v) => !v)}
+            onClose={() => mv.setOpen(false)}
+          />
+        ) : null}
       </Grid>
       {ecg ? (
         <EcgStrip
