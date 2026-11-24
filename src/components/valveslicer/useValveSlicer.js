@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { MV_POINTS, buildMvSlicer, moveKeepingDepth } from '../../utils/mvSlicer';
+import { moveKeepingDepth } from '../../utils/mvSlicer';
 
 /**
- * State of the mitral valve slicer: the four picked points (AL, Mid, PM,
- * AoV), the normal of the view they were picked in, display options, and
- * whether the nine-cut view is open.
+ * State of a valve slicer (MV or TV): the picked points, the normal of the
+ * view they were picked in, display options, and whether the cut view is open.
+ *
+ * @param {{volume, pointDefs: {key,label,short,color}[], build: Function}} config
+ *   `build(points, viewNormal, options)` returns the slicer result.
  */
-export default function useMvSlicer({ volume }) {
+export default function useValveSlicer({ volume, pointDefs, build }) {
   const [points, setPoints] = useState({});
   const [viewNormal, setViewNormal] = useState(null);
   const [mode, setMode] = useState('fan');
@@ -20,20 +22,21 @@ export default function useMvSlicer({ volume }) {
     setOpen(false);
   }, [volume]);
 
-  const next = MV_POINTS.find((p) => !points[p.key]) || null;
-  const placedCount = MV_POINTS.filter((p) => points[p.key]).length;
+  const next = pointDefs.find((p) => !points[p.key]) || null;
+  const placedCount = pointDefs.filter((p) => points[p.key]).length;
+  const options = useMemo(() => ({ mode, flipVertical, mirror }), [mode, flipVertical, mirror]);
 
   const result = useMemo(
-    () => (next ? null : buildMvSlicer(points, viewNormal, { mode, flipVertical, mirror })),
-    [next, points, viewNormal, mode, flipVertical, mirror]
+    () => (next ? null : build(points, viewNormal, options)),
+    [next, points, viewNormal, options, build]
   );
 
   /** Place the next point; returns true when that was the last one. */
   const addPoint = (mm, paneNormal) => {
     if (!next) return false;
-    if (next.key === 'al') setViewNormal(paneNormal ? paneNormal.slice() : null);
+    if (next.key === pointDefs[0].key) setViewNormal(paneNormal ? paneNormal.slice() : null);
     setPoints((prev) => ({ ...prev, [next.key]: mm.slice() }));
-    return next.key === MV_POINTS[MV_POINTS.length - 1].key;
+    return next.key === pointDefs[pointDefs.length - 1].key;
   };
 
   /**
@@ -47,20 +50,19 @@ export default function useMvSlicer({ volume }) {
       const moved = normal ? moveKeepingDepth(prev[key], inPlaneMm, normal) : inPlaneMm.slice();
       const candidate = { ...prev, [key]: moved };
       // Ignore a move that would make the cuts impossible (e.g. AL onto PM).
-      const ok = buildMvSlicer(candidate, viewNormal, { mode, flipVertical, mirror }).ok;
-      return ok ? candidate : prev;
+      return build(candidate, viewNormal, options).ok ? candidate : prev;
     });
   };
 
   const undo = () => {
-    const last = [...MV_POINTS].reverse().find((p) => points[p.key]);
+    const last = [...pointDefs].reverse().find((p) => points[p.key]);
     if (!last) return;
     setPoints((prev) => {
       const out = { ...prev };
       delete out[last.key];
       return out;
     });
-    if (last.key === 'al') setViewNormal(null);
+    if (last.key === pointDefs[0].key) setViewNormal(null);
     setOpen(false);
   };
 
@@ -75,18 +77,17 @@ export default function useMvSlicer({ volume }) {
     () =>
       placedCount
         ? {
-            points: MV_POINTS.filter((p) => points[p.key]).map((p) => ({
-              key: p.key,
-              short: p.short,
-              mm: points[p.key],
-            })),
+            points: pointDefs
+              .filter((p) => points[p.key])
+              .map((p) => ({ key: p.key, short: p.short, color: p.color, mm: points[p.key] })),
             result: result?.ok ? result : null,
           }
         : null,
-    [placedCount, points, result]
+    [placedCount, pointDefs, points, result]
   );
 
   return {
+    pointDefs,
     points,
     next,
     placedCount,
