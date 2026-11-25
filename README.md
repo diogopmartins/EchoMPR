@@ -14,6 +14,7 @@ Browser-based **multi-planar reconstruction (MPR)** and 3D volume viewing for **
 - 3D annulus traced in the slicer cuts (saddle shape, area, perimeter, diameters, AHCWR, aorto-mitral angle), used as the reference for leaflet heights
 - Tenting (height, area, volume) for functional MR/TR, and a cycle analysis that charts every frame and jumps to the worst one
 - 3D leaflet model in the 3D view: leaflets coloured by height, annulus, coaptation line and segment labels, with surgical and ventricular views
+- Every number explains itself on hover: what it is, how it is measured, and normal or cut-off values with their source; the map and the 3D model read out the height under the cursor
 - No server: files never leave the browser
 
 ## Supported data
@@ -89,9 +90,9 @@ The hinges get a best-fit plane and a closed curve: radius and height as Fourier
 
 Leaflet below the reference counts as tenting, shaded blue in the cuts and the map. Read it in mid-systole with the valve closed.
 
-- **Max tenting height** and the segment it is in, and **tenting volume** (mL) between the reference and the leaflets, also per segment.
-- **Per cut:** tenting area (between the reference and the leaflets) and coaptation depth (deepest leaflet within 3 mm of the coaptation point). The cut with the largest tenting area is shown in the panel.
-- **Reference values:** markers of recurrent functional MR after ring annuloplasty include coaptation depth ≥ 1 cm and tenting area ≥ 2.5 cm² (cut-offs vary between studies). For the TV, Fukuda et al. reported tethering distance > 0.76 cm and tethering area > 1.63 cm² as predictors of residual TR after annuloplasty.
+- **Coaptation depth (tenting height)** and **tenting area**, read where they are measured clinically: in the A2/P2 cut for the MV, and in the cut where the leaflets meet deepest for the TV. Coaptation depth is the deepest leaflet within 3 mm of the coaptation point; it is not given when the leaflets do not meet in that cut. The cut with the largest tenting area is listed too when it is another one.
+- **Tenting volume** (mL) between the reference and the leaflets, and the **deepest leaflet point** anywhere in the valve, also per segment.
+- **Reference values:** a coaptation depth over 11 mm was an EVEREST exclusion for TEER, and a tenting area above about 2.4–2.5 cm² is linked to recurrent MR after annuloplasty. For the TV, Fukuda et al. reported tethering distance > 0.76 cm and tethering area > 1.63 cm² as predictors of residual TR after annuloplasty. Values above these are shown in red.
 
 ### Over the cycle
 
@@ -111,7 +112,33 @@ Once the points are picked, the 3D view (bottom right of the MPR layout) shows a
 - **Annulus:** the traced 3D annulus in yellow, or the estimated outline (dashed grey) before tracing.
 - **Labels:** the coaptation line (white), AL, PM, the coaptation centre, the AoV, and the segments A1–P3 (A, S and P for the TV).
 - **Views:** **Surgical view** looks from the LA with the AoV at 12 o’clock, as in the key map; **From LV** looks from the ventricle. For the TV the buttons read **From RA** and **From RV**. **Model only** hides the volume rendering. The model is built once per frame and then cached.
+- **Hover:** pointing at the leaflets shows the segment and the height at that point, for example “P2 · +3.1 mm above the 3D annulus (saddle)”.
 - **Hide 3D leaflet model** in the MV or TV slicer section turns it off.
+
+### Numbers and hover explanations
+
+Every number uses the same units and rounding everywhere:
+
+- **Units:** lengths and heights in mm with one decimal, areas in cm² with two, volumes in mL with two, angles in whole degrees. Distances measured in the MPR views stay in mm too.
+- **Signs:** leaflet heights carry a sign, + towards the atrium (above the reference) and − towards the ventricle (below it). Depths below the reference (coaptation depth, tenting) are given as positive distances.
+- **Missing values:** a dash means the value does not apply, for example no coaptation depth where the leaflets do not meet.
+- **Consistency:** the cuts sample their lines more finely than the map, so the summary (highest point, deepest point, per segment) takes the more extreme of the two. No cut reads beyond the summary. The cycle charts use the same sampling as the panel, so a chart reads the same value as the panel for the frame on screen.
+- **Open frames:** after **Analyse the cycle**, the prolapse and tenting sections warn when the frame on screen is open (diastole), because those are systolic measures.
+- **Sanity check:** an annulus fit outside broad adult bounds (area 3–25 cm², height over 20 mm, AHCWR over 50%) is flagged as a likely tracing error.
+- **Wall at the top of the search:** the leaflet surface is the first blood-to-tissue transition, so tissue where the search starts (atrial wall, aortic root) is not read as a leaflet at +15 mm.
+
+Names and values with a dotted underline explain themselves on hover, keyboard focus or tap. Each explanation says what the number is, how it is measured and, where published, the normal or cut-off values with a link to the source:
+
+- Mitral annulus normal values: [WASE study](https://pmc.ncbi.nlm.nih.gov/articles/PMC10257802/).
+- Tricuspid annulus normal values: [Muraru et al. 2022](https://pmc.ncbi.nlm.nih.gov/articles/PMC9513148/).
+- AHCWR: [Salgo et al. 2002](https://pure.psu.edu/en/publications/effect-of-annular-shape-on-leaflet-curvature-in-reducing-mitral-l/).
+- Prolapse definition (> 2 mm): [review](https://pmc.ncbi.nlm.nih.gov/articles/PMC5805573/).
+- EVEREST criteria: [table](https://pmc.ncbi.nlm.nih.gov/articles/PMC6288214/).
+- Tenting area and outcome: [Open Heart 2021](https://openheart.bmj.com/node/141927).
+- Tenting volume: [functional MR vs controls](https://pmc.ncbi.nlm.nih.gov/articles/PMC7368231/).
+- TV tethering: [Fukuda et al. 2005](https://pubmed.ncbi.nlm.nih.gov/?term=Fukuda+tricuspid+valve+tethering+predicts+residual+tricuspid+regurgitation+after+tricuspid+annuloplasty).
+
+With the prolapse colours on, the surgical-view map reads out the segment and leaflet height under the cursor.
 
 ## TV slicer
 

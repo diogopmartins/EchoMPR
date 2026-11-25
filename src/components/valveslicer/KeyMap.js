@@ -9,6 +9,9 @@ import {
 } from '../../utils/mvSlicer';
 import { CUT_COLOR, labelAnchor, labelEnd } from './drawSlicerOverlay';
 import { HEIGHT_RANGE, heightColor, heightGradientCss } from '../../utils/heightColors';
+import { REFERENCES } from '../../utils/annulusFit';
+import { mmSigned } from '../../utils/format';
+import { insideValve } from '../../utils/valveAnalysis';
 
 export const KEY_PX = 260;
 export const KEY_SLAB_MM = 10;
@@ -27,9 +30,24 @@ function distToSegment(x, y, a, b) {
 }
 
 /**
+ * Leaflet height under the cursor, from the height map (frame coordinates of
+ * the key map). null outside the valve outline.
+ */
+function readHeight(result, heights, f) {
+  const q = frameToWorld(heights.frame, f.x, f.y);
+  if (!insideValve(result, q)) return null;
+  const i = Math.floor((f.x - heights.frame.xMin) / heights.mmPerPx);
+  const j = Math.floor((f.y - heights.frame.yMin) / heights.mmPerPx);
+  const inGrid = i >= 0 && j >= 0 && i < heights.width && j < heights.height;
+  const h = inGrid ? heights.heights[j * heights.width + i] : NaN;
+  return { segment: result.segmentAt(q), h: Number.isNaN(h) ? null : h };
+}
+
+/**
  * En-face key map (valve-level slab MIP) with the numbered cut lines and the
  * picked points, which can be dragged; the cuts update as they move.
  * Optional layers: prolapse height colours, the orifice, a virtual clip band.
+ * With the height colours on, the height under the cursor is read out below.
  */
 export default function KeyMap({
   volume,
@@ -52,6 +70,7 @@ export default function KeyMap({
   // the image does not turn under the cursor as the axes change.
   const [dragFrame, setDragFrame] = useState(null);
   const [dragKey, setDragKey] = useState(null);
+  const [readout, setReadout] = useState(null);
   const frame = dragFrame || result.keyMap;
   const mmPerPx = (frame.xMax - frame.xMin) / KEY_PX;
 
@@ -302,7 +321,8 @@ export default function KeyMap({
       if (!d.raf) d.raf = requestAnimationFrame(flush);
       return;
     }
-    e.currentTarget.style.cursor = hitPoint(x, y, k) ? 'grab' : hitLine(x, y, k) ? 'pointer' : 'default';
+    e.currentTarget.style.cursor = hitPoint(x, y, k) ? 'grab' : hitLine(x, y, k) ? 'pointer' : 'crosshair';
+    setReadout(heights && heights.frame === frame ? readHeight(result, heights, pixelToFrame(frame, x, y, mmPerPx)) : null);
   };
 
   const onPointerUp = (e) => {
@@ -322,13 +342,40 @@ export default function KeyMap({
   };
 
   const names = result.keyPoints.map((p) => p.text).join(', ');
+  const refShort = (REFERENCES.find((r) => r.id === (result.reference || 'picked')) || REFERENCES[0]).short;
+  let readText = heights ? 'Hover over the valve for the leaflet height at a point.' : '';
+  if (readout) {
+    const where = readout.segment ? `${readout.segment} · ` : '';
+    readText =
+      readout.h == null
+        ? `${where}no leaflet found here`
+        : Math.abs(readout.h) < 0.05
+          ? `${where}level with the ${refShort}`
+          : `${where}${mmSigned(readout.h)} ${readout.h > 0 ? 'above' : 'below'} the ${refShort}`;
+  }
   return (
-    <canvas
-      ref={ref}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      title={`Drag ${names} to adjust them · Click a line to open that cut`}
-    />
+    <>
+      <canvas
+        ref={ref}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => setReadout(null)}
+        title={`Drag ${names} to adjust them · Click a line to open that cut`}
+      />
+      {heights ? (
+        <div
+          data-keymap-readout
+          style={{
+            minHeight: '1.1em',
+            fontSize: '0.66rem',
+            color: readout ? '#fff' : '#9e9e9e',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {readText}
+        </div>
+      ) : null}
+    </>
   );
 }

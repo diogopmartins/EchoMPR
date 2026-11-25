@@ -12,6 +12,10 @@ import {
   teerMeasures,
   virtualClip,
 } from '../../utils/valveAnalysis';
+import { REFERENCES } from '../../utils/annulusFit';
+import { mm, mmSigned } from '../../utils/format';
+import { infoContext } from '../../utils/metricInfo';
+import Tip from '../Tip';
 import { CUT_COLOR } from './drawSlicerOverlay';
 import KeyMap from './KeyMap';
 import SidePanel from './SidePanel';
@@ -122,7 +126,7 @@ const CellResult = styled.div`
   padding: 0.1rem 0.35rem;
   border-radius: 3px;
   background: rgba(0, 0, 0, 0.65);
-  pointer-events: none;
+  pointer-events: ${(p) => (p.$interactive ? 'auto' : 'none')};
   color: ${(p) => (p.$alert ? '#ff6e6e' : '#c8c8c8')};
   font-weight: ${(p) => (p.$alert ? 600 : 400)};
 
@@ -411,14 +415,49 @@ function CutCanvas({
   return <canvas ref={ref} onClick={onClick} />;
 }
 
-function cellSummary(profile, cut) {
-  if (!profile || profile.maxHeight == null) return { text: 'no leaflet found', alert: false };
-  const leaflet = profile.maxLeaflet ? ` ${profile.maxLeaflet}` : '';
+/**
+ * Measurements shown under a cut: the highest leaflet point (a prolapse when
+ * above +2 mm, with its leaflet and length), the coaptation gap and the
+ * coaptation depth, each explained on hover.
+ */
+function CutSummary({ profile, ctx }) {
+  if (!profile || profile.maxHeight == null) return 'no leaflet found';
   const pro = profile.maxHeight > PROLAPSE_MM;
-  const main = pro
-    ? `↑ ${profile.maxHeight.toFixed(1)} mm${leaflet} · ${profile.prolapseWidthMm.toFixed(1)} mm long`
-    : `max ${profile.maxHeight.toFixed(1)} mm`;
-  return { text: main, alert: pro, gap: profile.gapMm > 0 ? profile.gapMm : 0 };
+  return (
+    <>
+      {pro ? (
+        <>
+          <Tip id="cutMax" ctx={ctx}>
+            prolapse {mmSigned(profile.maxHeight)}
+          </Tip>
+          {profile.maxLeaflet ? ` ${profile.maxLeaflet}` : ''} ·{' '}
+          <Tip id="cutLength" ctx={ctx}>
+            {mm(profile.prolapseWidthMm)} long
+          </Tip>
+        </>
+      ) : (
+        <Tip id="cutMax" ctx={ctx}>
+          highest {mmSigned(profile.maxHeight)}
+        </Tip>
+      )}
+      {profile.gapMm > 0 ? (
+        <span className="gap">
+          {' · '}
+          <Tip id="cutGap" ctx={ctx}>
+            gap {mm(profile.gapMm)}
+          </Tip>
+        </span>
+      ) : null}
+      {profile.tentingHeightMm > 0.5 ? (
+        <>
+          {' · '}
+          <Tip id="cutDepth" ctx={ctx}>
+            depth {mm(profile.tentingHeightMm)}
+          </Tip>
+        </>
+      ) : null}
+    </>
+  );
 }
 
 export default function SlicerView({
@@ -633,6 +672,10 @@ export default function SlicerView({
   const nextTeerStep = TEER_STEPS.find((s) => !teerPoints[s.key]);
   const flipLabel = `Flip ${o.top}/${o.bottom}`;
   const refLabel = reference === 'saddle' ? ' · heights from the 3D annulus' : reference === 'plane' ? ' · heights from the annulus plane' : '';
+  const infoCtx = infoContext(
+    analysisResult,
+    (REFERENCES.find((r) => r.id === (analysisResult.reference || 'picked')) || REFERENCES[0]).short
+  );
 
   const clickModeFor = (cut) => {
     if (single !== cut.index) return null;
@@ -661,8 +704,18 @@ export default function SlicerView({
           <strong>{result.title}</strong>
           <span>
             {result.modeText} · {result.cuts.length} cuts
-            {result.kind === 'mv' ? ` · ${result.spacingMm.toFixed(1)} mm apart on the coaptation line` : ''}
-            {refLabel} · T {timeIndex + 1}/{frameCount}
+            {result.kind === 'mv' ? (
+              <>
+                {' · '}
+                <Tip id="cutSpacing">{mm(result.spacingMm)} apart</Tip> on the coaptation line
+              </>
+            ) : (
+              ''
+            )}
+            {refLabel} ·{' '}
+            <Tip id="frame">
+              T {timeIndex + 1}/{frameCount}
+            </Tip>
           </span>
         </Title>
         <HeaderButton
@@ -690,7 +743,7 @@ export default function SlicerView({
           {cuts.map((cut) => {
             const i = result.cuts.indexOf(cut);
             const profile = frame?.profiles[i];
-            const summary = cellSummary(profile, cut);
+            const alert = profile?.maxHeight != null && profile.maxHeight > PROLAPSE_MM;
             const mode = clickModeFor(cut);
             const prompt = promptFor(cut, mode);
             const showTeer = result.kind === 'mv' && cut.index === teerCut && Object.keys(teerPoints).length;
@@ -727,14 +780,12 @@ export default function SlicerView({
                   teerPoints={showTeer ? teerPoints : null}
                   onImageClick={onImageClick}
                 />
-                <CellLabel $alert={summary.alert}>
+                <CellLabel $alert={alert}>
                   {cut.index} · {cut.label}
                 </CellLabel>
                 {prompt ? <Prompt>{prompt}</Prompt> : null}
-                <CellResult $alert={summary.alert}>
-                  {summary.text}
-                  {summary.gap ? <span className="gap"> · gap {summary.gap.toFixed(1)} mm</span> : null}
-                  {profile?.tentingHeightMm > 0.5 ? ` · tent ${profile.tentingHeightMm.toFixed(1)} mm` : ''}
+                <CellResult $alert={alert} $interactive={!mode} onClick={(e) => e.stopPropagation()}>
+                  <CutSummary profile={profile} ctx={infoCtx} />
                 </CellResult>
                 <Orient $pos="top: 6px; right: 8px;">{o.top}</Orient>
                 <Orient $pos="bottom: 3px; left: 50%; transform: translateX(-50%);">{o.bottom}</Orient>

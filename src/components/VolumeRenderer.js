@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { getVolumeAtTime, physicalSizeMm } from '../utils/philipsVolume';
 import { mmToUnitBox, voxelToMm } from '../utils/mprGeometry';
 import { localToWorld, valveFrames } from '../utils/valveModel';
+import { REFERENCES } from '../utils/annulusFit';
+import { mmSigned } from '../utils/format';
 
 const vertexShader = /* glsl */ `
 out vec3 vOrigin;
@@ -495,6 +497,29 @@ const MODEL_LABEL_STYLE = {
   whiteSpace: 'nowrap',
 };
 
+const MODEL_HOVER_STYLE = {
+  pointerEvents: 'none',
+  font: '600 11px Arial, Helvetica, sans-serif',
+  color: '#ffffff',
+  background: 'rgba(18, 18, 18, 0.88)',
+  border: '1px solid #5a5a5a',
+  borderRadius: 4,
+  padding: '2px 6px',
+  whiteSpace: 'nowrap',
+  transform: 'translate(10px, -50%)',
+};
+
+/** Hover text for a model vertex: segment, then the height above or below the reference. */
+function modelHoverText(model, v) {
+  const h = model.heights?.[v];
+  if (h == null || Number.isNaN(h)) return null;
+  const ref = (REFERENCES.find((r) => r.id === model.reference) || REFERENCES[0]).short;
+  const seg = model.vertexSegments?.[v];
+  const where = seg ? `${seg} · ` : '';
+  if (Math.abs(h) < 0.05) return `${where}level with the ${ref}`;
+  return `${where}${mmSigned(h)} ${h > 0 ? 'above' : 'below'} the ${ref}`;
+}
+
 /**
  * Leaflet model of a valve slicer (see utils/leafletModel): the leaflet
  * surface coloured by height, the annulus, the coaptation line, the key
@@ -535,11 +560,42 @@ function LeafletModel({ volume, model }) {
     [volume, model]
   );
 
+  // Height under the pointer: the nearest corner of the face that was hit
+  const [hover, setHover] = useState(null);
+  useEffect(() => setHover(null), [model]);
+  const onPointerMove = (e) => {
+    e.stopPropagation();
+    if (!e.face) return;
+    const local = e.object.worldToLocal(e.point.clone());
+    const pos = geometry.attributes.position;
+    let best = e.face.a;
+    let bestD = Infinity;
+    [e.face.a, e.face.b, e.face.c].forEach((v) => {
+      const d = (pos.getX(v) - local.x) ** 2 + (pos.getY(v) - local.y) ** 2 + (pos.getZ(v) - local.z) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = v;
+      }
+    });
+    setHover((h) => (h && h.v === best ? h : { v: best, point: [local.x, local.y, local.z] }));
+  };
+  const hoverText = hover ? modelHoverText(model, hover.v) : null;
+
   return (
     <group>
-      <mesh geometry={geometry} renderOrder={6}>
+      <mesh
+        geometry={geometry}
+        renderOrder={6}
+        onPointerMove={onPointerMove}
+        onPointerOut={() => setHover(null)}
+      >
         <meshStandardMaterial vertexColors side={THREE.DoubleSide} roughness={0.55} metalness={0.02} />
       </mesh>
+      {hoverText ? (
+        <Html position={hover.point} style={MODEL_HOVER_STYLE} zIndexRange={[30, 20]}>
+          <span data-model-hover>{hoverText}</span>
+        </Html>
+      ) : null}
       {annulus ? (
         <Line
           points={annulus}

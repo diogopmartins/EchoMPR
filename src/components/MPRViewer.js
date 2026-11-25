@@ -70,6 +70,9 @@ import useValveSlicer from './valveslicer/useValveSlicer';
 import useLeafletModel from './valveslicer/useLeafletModel';
 import { HEIGHT_RANGE, heightGradientCss } from '../utils/heightColors';
 import { REFERENCES } from '../utils/annulusFit';
+import { cm2 as formatCm2, mm as formatMm } from '../utils/format';
+import { infoContext } from '../utils/metricInfo';
+import Tip from './Tip';
 import drawSlicerOverlay from './valveslicer/drawSlicerOverlay';
 import SlicerView from './valveslicer/SlicerView';
 import {
@@ -432,7 +435,7 @@ const ModelLegend = styled.div`
   background: rgba(0, 0, 0, 0.6);
   color: #e0e0e0;
   font-size: 0.62rem;
-  pointer-events: none;
+  pointer-events: auto;
 
   .bar {
     height: 7px;
@@ -748,13 +751,13 @@ function lineHandlesCss(cx, cy, dirU, dirV, dw, dh) {
   ];
 }
 
+/** Lengths always in mm and areas in cm², as in the valve panels. */
 function formatDistance(mm) {
-  if (mm < 10) return `${mm.toFixed(1)} mm`;
-  return `${(mm / 10).toFixed(2)} cm`;
+  return formatMm(mm);
 }
 
 function formatArea(mm2) {
-  return `${(mm2 / 100).toFixed(2)} cm²`;
+  return formatCm2(mm2);
 }
 
 function drawMeasureLabel(ctx, x, y, text, color = '#ffb74d') {
@@ -2476,7 +2479,14 @@ const MPRViewer = () => {
           {ecg ? (
             <MeasureMetaLine>
               {ecg.label || 'ECG'}
-              {ecg.heartRateBpm ? ` · ${Math.round(ecg.heartRateBpm)} bpm` : ''}
+              {ecg.heartRateBpm ? (
+                <>
+                  {' · '}
+                  <Tip id="heartRate">{Math.round(ecg.heartRateBpm)} bpm</Tip>
+                </>
+              ) : (
+                ''
+              )}
             </MeasureMetaLine>
           ) : null}
           <MeasureMetaLine>
@@ -2566,8 +2576,8 @@ const MPRViewer = () => {
                 {mv.showModel ? 'Hide 3D leaflet model' : 'Show 3D leaflet model'}
               </Button>
               <MeasureMetaLine>
-                Cuts {mv.result.spacingMm.toFixed(1)} mm apart along a{' '}
-                {mv.result.coaptationLengthMm.toFixed(0)} mm coaptation line
+                Cuts <Tip id="cutSpacing">{formatMm(mv.result.spacingMm)} apart</Tip> along a{' '}
+                <Tip id="coaptationLine">{formatMm(mv.result.coaptationLengthMm, 0)}</Tip> coaptation line
               </MeasureMetaLine>
             </>
           ) : null}
@@ -2662,7 +2672,7 @@ const MPRViewer = () => {
           </Button>
           <SliderRow>
             <Label $wide="4.8rem">
-              {slabMm < 1 ? 'Thin' : `${slabMm} mm`}
+              <Tip id="slab">{slabMm < 1 ? 'Thin' : `${slabMm} mm`}</Tip>
             </Label>
             <Slider
               type="range"
@@ -2987,7 +2997,7 @@ const MPRViewer = () => {
                   >
                     <MeasureLabel $color={measureColor(m)}>{m.label}</MeasureLabel>
                     <MeasureValue>
-                      {measurementCaption(m)}
+                      <Tip id={m.type === 'distance' ? 'distance' : 'area'}>{measurementCaption(m)}</Tip>
                       <MeasureMetaLine>
                         T{m.timeIndex + 1} · {AXIS_META[m.axis]?.short || m.axis}
                       </MeasureMetaLine>
@@ -3147,10 +3157,12 @@ const MPRViewer = () => {
         </SidebarSection>
 
         <Meta>
-          {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
-          × {volume.dims.t}
-          <br />
-          {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×{sizeMm.z.toFixed(0)} mm
+          <Tip id="volumeSize">
+            {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
+            × {volume.dims.t}
+            <br />
+            {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×{sizeMm.z.toFixed(0)} mm
+          </Tip>
         </Meta>
       </ControlSidebar>
 
@@ -3277,8 +3289,17 @@ const MPRViewer = () => {
           {leafletModels.length ? (
             <ModelLegend>
               <div>
-                Leaflet height (mm) from the{' '}
-                {(REFERENCES.find((r) => r.id === leafletModels[0].reference) || REFERENCES[0]).short}
+                <Tip
+                  id="leafletHeight"
+                  ctx={infoContext(
+                    { kind: leafletModels[0].kind },
+                    (REFERENCES.find((r) => r.id === leafletModels[0].reference) || REFERENCES[0]).short
+                  )}
+                  extra="Hover over the leaflets for the height at a point."
+                >
+                  Leaflet height (mm) from the{' '}
+                  {(REFERENCES.find((r) => r.id === leafletModels[0].reference) || REFERENCES[0]).short}
+                </Tip>
               </div>
               <div className="bar" style={{ background: heightGradientCss() }} />
               <div className="ticks">
@@ -3287,7 +3308,7 @@ const MPRViewer = () => {
                     key={t}
                     style={{ left: `${((t - HEIGHT_RANGE[0]) / (HEIGHT_RANGE[1] - HEIGHT_RANGE[0])) * 100}%` }}
                   >
-                    {t > 0 ? `+${t}` : t}
+                    {t > 0 ? `+${t}` : t < 0 ? `−${-t}` : t}
                   </span>
                 ))}
               </div>

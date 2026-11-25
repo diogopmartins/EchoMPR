@@ -7,6 +7,7 @@ import {
   frameMetrics,
   heightMap,
   makeSampler,
+  mergeCutExtremes,
 } from '../../utils/valveAnalysis';
 
 /**
@@ -38,10 +39,13 @@ export default function useValveAnalysis({ volume, timeIndex, result, thresholdO
   const frame = useMemo(() => {
     if (!result?.ok) return null;
     const sample = makeSampler(volume, timeIndex);
-    const auto = estimateThreshold(sample, result).threshold;
+    const levels = estimateThreshold(sample, result);
+    const auto = levels.threshold;
     const threshold = thresholdOverride ?? auto;
-    const map = heightMap(sample, result, threshold);
+    const rawMap = heightMap(sample, result, threshold);
     const profiles = result.cuts.map((cut) => cutProfile(sample, result, cut, threshold));
+    // Summary numbers agree with the finer per-cut traces
+    const map = { ...rawMap, stats: mergeCutExtremes(rawMap.stats, profiles, result) };
     let worst = null;
     profiles.forEach((p, i) => {
       if (p.maxHeight != null && (worst == null || p.maxHeight > profiles[worst].maxHeight)) worst = i;
@@ -52,6 +56,7 @@ export default function useValveAnalysis({ volume, timeIndex, result, thresholdO
     });
     return {
       autoThreshold: auto,
+      levels,
       threshold,
       map,
       profiles,

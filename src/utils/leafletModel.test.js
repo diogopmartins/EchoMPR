@@ -41,6 +41,11 @@ describe('buildLeafletModel', () => {
     for (let v = 1; v < n; v++) if (model.positions[3 * v + 2] > model.positions[3 * deepest + 2]) deepest = v;
     const [red, , blue] = model.colors.subarray(3 * deepest, 3 * deepest + 3);
     expect(blue).toBeGreaterThan(red);
+    // The hover readout of that vertex: below the reference, in a segment
+    expect(model.heights).toHaveLength(n);
+    expect(model.vertexSegments).toHaveLength(n);
+    expect(model.heights[deepest]).toBeLessThan(-2);
+    expect(typeof model.vertexSegments[deepest]).toBe('string');
   });
 
   test('annulus, coaptation line, markers and segment labels', () => {

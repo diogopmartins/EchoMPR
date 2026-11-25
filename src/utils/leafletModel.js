@@ -77,6 +77,8 @@ export function buildLeafletModel(sample, result, threshold, { mmPerPx = 0.5, ra
   const vertexOf = new Int32Array(width * height).fill(-1);
   const positions = [];
   const colors = [];
+  const vertexHeights = [];
+  const vertexSegments = [];
   const segSums = {};
   for (let k = 0; k < width * height; k++) {
     if (!pts[k]) continue;
@@ -85,7 +87,9 @@ export function buildLeafletModel(sample, result, threshold, { mmPerPx = 0.5, ra
     positions.push(p[0], p[1], p[2]);
     const c = heightColor(map.heights[k]);
     colors.push(c[0] / 255, c[1] / 255, c[2] / 255);
+    vertexHeights.push(map.heights[k]);
     const seg = result.segmentAt(pts[k]);
+    vertexSegments.push(seg || null);
     if (seg) {
       const s = segSums[seg] || (segSums[seg] = { sum: [0, 0, 0], n: 0 });
       s.sum = add(s.sum, p);
@@ -173,6 +177,9 @@ export function buildLeafletModel(sample, result, threshold, { mmPerPx = 0.5, ra
     reference: result.reference || 'picked',
     positions: Float32Array.from(positions),
     colors: Float32Array.from(colors),
+    // Per vertex: leaflet height above the reference (what the colour shows) and segment
+    heights: Float32Array.from(vertexHeights),
+    vertexSegments,
     indices: Uint32Array.from(indices),
     annulus,
     annulusTraced,

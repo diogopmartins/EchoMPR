@@ -141,13 +141,18 @@ export function estimateThreshold(sample, result) {
 /**
  * Height (mm, positive towards the atrium) of the first leaflet tissue met
  * when walking from the atrial side along `down` through the plane point q.
+ * The surface is a blood → tissue transition: when the walk starts inside
+ * tissue (atrial wall, aortic root), that tissue is passed over, so it does
+ * not read as a leaflet at the top of the search range.
  * null when no tissue is found in the search range.
  */
 export function leafletHeight(sample, q, down, threshold, depthMm = LEAFLET_DEPTH_MM) {
   let prev = false;
+  let blood = false;
   for (let s = -SEARCH.atrial; s <= depthMm; s += SEARCH.step) {
     const hit = sample(add(q, scale(down, s))) >= threshold;
-    if (hit && prev) return -(s - SEARCH.step);
+    if (!hit) blood = true;
+    else if (prev && blood) return -(s - SEARCH.step);
     prev = hit;
   }
   return null;
@@ -343,6 +348,43 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
     tentingAreaMm2,
     tentingHeightMm: deepest == null || gapMm > 0 ? null : Math.max(0, -deepest),
   };
+}
+
+/**
+ * The cuts sample their lines more finely (0.25 mm) than the map grid, so a
+ * cut can find a point a little higher or deeper than the map. The summary
+ * takes the more extreme of the two, overall and per segment, so no cut ever
+ * reads beyond the summary (e.g. a coaptation depth deeper than the deepest
+ * leaflet point). Returns new stats; the map itself is unchanged.
+ */
+export function mergeCutExtremes(stats, profiles, result) {
+  const segments = {};
+  Object.entries(stats.segments).forEach(([k, v]) => {
+    segments[k] = { ...v };
+  });
+  const out = { ...stats, segments };
+  result.cuts.forEach((cut, i) => {
+    const prof = profiles[i];
+    if (!prof) return;
+    prof.points.forEach((pt) => {
+      if (pt.h == null) return;
+      const q = frameToWorld(cut, pt.x, 0);
+      const seg = result.segmentAt(q);
+      const st = seg ? segments[seg] : null;
+      if (out.maxHeight == null || pt.h > out.maxHeight) {
+        out.maxHeight = pt.h;
+        out.maxAt = q;
+        out.maxSegment = seg;
+      }
+      if (st && (st.maxHeight == null || pt.h > st.maxHeight)) st.maxHeight = pt.h;
+      if (-pt.h > out.maxTentingMm) {
+        out.maxTentingMm = -pt.h;
+        out.maxTentingAt = q;
+      }
+      if (st && -pt.h > st.maxTentingMm) st.maxTentingMm = -pt.h;
+    });
+  });
+  return out;
 }
 
 /**
@@ -599,11 +641,12 @@ export function orificeSeed(result) {
 /**
  * Summary of one frame for the cycle charts: the highest leaflet point, the
  * widest coaptation gap over the cuts, the tenting, and the orifice area.
- * A 1 mm height grid keeps a whole cycle quick.
+ * Same sampling as the live analysis of a frame (0.5 mm map, 0.25 mm cuts),
+ * so a chart reads the same value as the panel for the frame on screen.
  */
-export function frameMetrics(sample, result, threshold, { mmPerPx = 1, withOrifice = true } = {}) {
+export function frameMetrics(sample, result, threshold, { mmPerPx = 0.5, cutStepMm = 0.25, withOrifice = true } = {}) {
   const map = heightMap(sample, result, threshold, mmPerPx);
-  const profiles = result.cuts.map((cut) => cutProfile(sample, result, cut, threshold, 0.5));
+  const profiles = result.cuts.map((cut) => cutProfile(sample, result, cut, threshold, cutStepMm));
   let gapMm = 0;
   let gapCut = null;
   profiles.forEach((p, i) => {
@@ -613,7 +656,7 @@ export function frameMetrics(sample, result, threshold, { mmPerPx = 1, withOrifi
     }
   });
   const orifice = withOrifice ? orificeAt(sample, result, threshold, orificeSeed(result)) : null;
-  const st = map.stats;
+  const st = mergeCutExtremes(map.stats, profiles, result);
   return {
     threshold,
     maxHeightMm: st.maxHeight,

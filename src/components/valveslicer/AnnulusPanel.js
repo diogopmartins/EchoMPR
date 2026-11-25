@@ -2,11 +2,9 @@ import React, { useState } from 'react';
 import styled from 'styled-components';
 import { REFERENCES } from '../../utils/annulusFit';
 import { PROLAPSE_MM } from '../../utils/valveAnalysis';
+import { DASH, cm2, deg, ml, mm, mmSigned, pct } from '../../utils/format';
+import Tip from '../Tip';
 import { Bad, Good, Note, Row, Section, SectionHead, SmallButton, Table, Warn } from './panelStyles';
-
-const mm = (v, d = 1) => (v == null ? '–' : `${v.toFixed(d)} mm`);
-const cm2 = (v) => (v == null ? '–' : `${(v / 100).toFixed(2)} cm²`);
-const ml = (v) => (v == null ? '–' : `${(v / 1000).toFixed(2)} mL`);
 
 const Segmented = styled.div`
   display: flex;
@@ -36,19 +34,60 @@ const Segmented = styled.div`
   }
 `;
 
+/** Value cell: right-aligned, never wrapping inside a number. */
+const Val = styled.td`
+  text-align: right;
+  white-space: nowrap;
+`;
+
+/** A table row: explained label on the left, value on the right. */
+function MetricRow({ id, ctx, label, children, extra, ...rest }) {
+  return (
+    <tr {...rest}>
+      <td>
+        <Tip id={id} ctx={ctx} extra={extra}>
+          {label}
+        </Tip>
+      </td>
+      <Val>{children}</Val>
+    </tr>
+  );
+}
+
+/**
+ * Bounds outside which an annulus fit is almost certainly a tracing error
+ * (not clinical cut-offs): hinges clicked off the annulus, or in mixed views.
+ */
+const PLAUSIBLE = {
+  areaMm2: [300, 2500],
+  heightMm: 20,
+  ahcwrPercent: 50,
+};
+
+function implausible(m) {
+  const out = [];
+  if (m.area3dMm2 < PLAUSIBLE.areaMm2[0] || m.area3dMm2 > PLAUSIBLE.areaMm2[1]) out.push(`area ${cm2(m.area3dMm2)}`);
+  if (m.heightMm > PLAUSIBLE.heightMm) out.push(`height ${mm(m.heightMm)}`);
+  if (m.ahcwrPercent > PLAUSIBLE.ahcwrPercent) out.push(`AHCWR ${pct(m.ahcwrPercent)}`);
+  return out;
+}
+
 /* ------------------------------------------------------------- Annulus -- */
 
-export function AnnulusSection({ result, annulus }) {
+export function AnnulusSection({ result, annulus, ctx }) {
   const { fit, tracing, cutsDone, frames } = annulus;
   const m = fit?.metrics;
   const isMv = result.kind === 'mv';
   const ahcwr = m?.ahcwrPercent;
+  const odd = m ? implausible(m) : [];
   return (
     <Section>
       <SectionHead>
         3D annulus
         <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
-          {cutsDone}/{result.cuts.length} cuts
+          <Tip id="cutsTraced" ctx={ctx}>
+            {cutsDone}/{result.cuts.length} cuts
+          </Tip>
         </span>
       </SectionHead>
       <Note>
@@ -99,68 +138,63 @@ export function AnnulusSection({ result, annulus }) {
               Hinges come from frames T{Math.min(...frames) + 1}–T{Math.max(...frames) + 1}; the fit mixes phases.
             </Warn>
           ) : null}
+          {odd.length ? (
+            <Warn>
+              Unusual for an adult annulus ({odd.join(', ')}). Check that the hinge points sit on the annulus in every
+              cut.
+            </Warn>
+          ) : null}
           <Table>
             <tbody>
-              <tr>
-                <td>Area (3D)</td>
-                <td>{cm2(m.area3dMm2)}</td>
-              </tr>
-              <tr>
-                <td>Area (projected)</td>
-                <td>{cm2(m.area2dMm2)}</td>
-              </tr>
-              <tr>
-                <td>Perimeter</td>
-                <td>{mm(m.perimeterMm)}</td>
-              </tr>
+              <MetricRow id="annulusArea3d" ctx={ctx} label="Area (3D)">
+                {cm2(m.area3dMm2)}
+              </MetricRow>
+              <MetricRow id="annulusArea2d" ctx={ctx} label="Area (projected)">
+                {cm2(m.area2dMm2)}
+              </MetricRow>
+              <MetricRow id="annulusPerimeter" ctx={ctx} label="Perimeter">
+                {mm(m.perimeterMm)}
+              </MetricRow>
               {isMv ? (
                 <>
-                  <tr>
-                    <td>AP diameter</td>
-                    <td>{mm(m.diameters.ap)}</td>
-                  </tr>
-                  <tr>
-                    <td>Commissural diameter</td>
-                    <td>{mm(m.diameters.cc)}</td>
-                  </tr>
+                  <MetricRow id="apDiameter" ctx={ctx} label="AP diameter">
+                    {mm(m.diameters.ap)}
+                  </MetricRow>
+                  <MetricRow id="ccDiameter" ctx={ctx} label="Commissural diameter">
+                    {mm(m.diameters.cc)}
+                  </MetricRow>
                 </>
               ) : (
                 <>
-                  <tr>
-                    <td>Max diameter</td>
-                    <td>{mm(m.maxDiameterMm)}</td>
-                  </tr>
-                  <tr>
-                    <td>Min diameter</td>
-                    <td>{mm(m.minDiameterMm)}</td>
-                  </tr>
+                  <MetricRow id="maxDiameter" ctx={ctx} label="Max diameter">
+                    {mm(m.maxDiameterMm)}
+                  </MetricRow>
+                  <MetricRow id="minDiameter" ctx={ctx} label="Min diameter">
+                    {mm(m.minDiameterMm)}
+                  </MetricRow>
                 </>
               )}
-              <tr>
-                <td>{isMv ? 'Saddle height' : 'Annulus height'}</td>
-                <td>{mm(m.heightMm)}</td>
-              </tr>
+              <MetricRow id="saddleHeight" ctx={ctx} label={isMv ? 'Saddle height' : 'Annulus height'}>
+                {mm(m.heightMm)}
+              </MetricRow>
               {isMv ? (
-                <tr>
-                  <td title="Annulus height to commissural width ratio">AHCWR</td>
-                  <td>
-                    {ahcwr < 15 ? <Warn>{ahcwr.toFixed(0)}% (flat)</Warn> : <Good>{ahcwr.toFixed(0)}%</Good>}
-                  </td>
-                </tr>
+                <MetricRow id="ahcwr" ctx={ctx} label="AHCWR">
+                  {ahcwr < 15 ? <Warn>{pct(ahcwr)} (flat)</Warn> : <Good>{pct(ahcwr)}</Good>}
+                </MetricRow>
               ) : null}
               {isMv ? (
-                <tr>
-                  <td>Aorto-mitral angle</td>
-                  <td>{annulus.angle == null ? '–' : `${annulus.angle.toFixed(0)}°`}</td>
-                </tr>
+                <MetricRow
+                  id="aortoMitralAngle"
+                  ctx={ctx}
+                  label="Aorto-mitral angle"
+                  extra={annulus.angle == null ? 'Click “Aortic annulus (2 clicks)” below to measure it.' : null}
+                >
+                  {deg(annulus.angle)}
+                </MetricRow>
               ) : null}
             </tbody>
           </Table>
-          {isMv ? (
-            <Note>
-              AHCWR below 15% means a flattened (“unsaddled”) annulus; normal annuli are roughly 15–25%.
-            </Note>
-          ) : null}
+          <Note>Hover over a name for what it measures and its normal range.</Note>
         </>
       ) : (
         <Note>{annulus.hingeCount ? 'Trace at least three cuts to fit the annulus.' : ''}</Note>
@@ -184,23 +218,69 @@ export function AnnulusSection({ result, annulus }) {
   );
 }
 
+/* ---------------------------------------------------- Open-frame notice -- */
+
+/** Warning shown on systolic measures when the cycle analysis classed this frame as open. */
+export function OpenFrameNote({ closedNow, timeIndex }) {
+  if (closedNow !== false) return null;
+  return (
+    <Warn>
+      T{timeIndex + 1} is an open frame (diastole): these are not systolic values. Use the jump buttons under “Over the
+      cycle”.
+    </Warn>
+  );
+}
+
 /* ------------------------------------------------------------- Tenting -- */
 
-export function TentingSection({ result, frame, onOpenCut }) {
+/** MV: the A2/P2 cut in the middle; TV: none (every cut is looked at). */
+export function centralCutIndex(result) {
+  if (result.kind !== 'mv' || !result.cuts.length) return null;
+  return Math.floor((result.cuts.length - 1) / 2);
+}
+
+const LIMITS = {
+  mv: { depthMm: 11, areaMm2: 250 },
+  tv: { depthMm: 7.6, areaMm2: 163 },
+};
+
+export function TentingSection({ result, frame, onOpenCut, ctx, closedNow, timeIndex }) {
   const { stats } = frame.map;
   const ref = REFERENCES.find((r) => r.id === stats.reference) || REFERENCES[0];
   const isMv = result.kind === 'mv';
+  const lim = LIMITS[isMv ? 'mv' : 'tv'];
+  const { profiles } = frame;
+
+  // The cut the clinical tenting numbers are read in: MV the A2/P2 cut; TV the
+  // cut where the leaflets meet deepest.
+  let main = centralCutIndex(result);
+  if (main == null) {
+    profiles.forEach((p, i) => {
+      if (p.tentingHeightMm != null && (main == null || p.tentingHeightMm > profiles[main].tentingHeightMm)) main = i;
+    });
+  }
   let widest = null;
-  frame.profiles.forEach((p, i) => {
-    if (p.tentingAreaMm2 > 0 && (widest == null || p.tentingAreaMm2 > frame.profiles[widest].tentingAreaMm2)) {
-      widest = i;
-    }
+  profiles.forEach((p, i) => {
+    if (p.tentingAreaMm2 > 0 && (widest == null || p.tentingAreaMm2 > profiles[widest].tentingAreaMm2)) widest = i;
   });
-  const wp = widest != null ? frame.profiles[widest] : null;
-  const wc = widest != null ? result.cuts[widest] : null;
+  const mp = main != null ? profiles[main] : null;
+  const mc = main != null ? result.cuts[main] : null;
+  const cutName = mc ? (isMv ? mc.label : `cut ${mc.index}`) : '';
+  const c = {
+    ...ctx,
+    centralCut: mc ? `cut ${mc.index} (${mc.label})${isMv ? '' : ', the cut where the leaflets meet deepest'}` : null,
+  };
   const segAt = stats.maxTentingAt ? result.segmentAt(stats.maxTentingAt) : null;
-  const deepLimit = isMv ? 10 : 7.6;
-  const areaLimit = isMv ? 250 : 163;
+
+  const depth = mp?.tentingHeightMm;
+  const depthText =
+    mp == null
+      ? DASH
+      : mp.gapMm > 0
+        ? `${DASH} (gap)`
+        : depth == null
+          ? `${DASH} (not found)`
+          : mm(depth);
   return (
     <Section>
       <SectionHead>Tenting</SectionHead>
@@ -209,43 +289,64 @@ export function TentingSection({ result, frame, onOpenCut }) {
         closed.
         {stats.reference === 'picked' ? ' Trace the 3D annulus for a true annular reference.' : ''}
       </Note>
+      <OpenFrameNote closedNow={closedNow} timeIndex={timeIndex} />
       <Table>
         <tbody>
-          <tr>
-            <td>Max tenting height</td>
-            <td>
-              {stats.maxTentingMm > deepLimit ? <Bad>{mm(stats.maxTentingMm)}</Bad> : mm(stats.maxTentingMm)}
-              {segAt ? ` in ${segAt}` : ''}
-            </td>
-          </tr>
-          <tr>
-            <td>Tenting volume</td>
-            <td>{ml(stats.tentingVolumeMm3)}</td>
-          </tr>
-          {wp ? (
-            <tr className="clickable" onClick={() => onOpenCut(wc.index)} title="Open this cut">
-              <td>
-                Tenting area (cut {wc.index} · {wc.label})
-              </td>
-              <td>
-                {wp.tentingAreaMm2 > areaLimit ? <Bad>{cm2(wp.tentingAreaMm2)}</Bad> : cm2(wp.tentingAreaMm2)}
-              </td>
-            </tr>
+          <MetricRow
+            id="coaptationDepth"
+            ctx={c}
+            label={`Coaptation depth${cutName ? ` · ${cutName}` : ''}`}
+            className={mc ? 'clickable' : undefined}
+            onClick={mc ? () => onOpenCut(mc.index) : undefined}
+          >
+            {depth != null && depth > lim.depthMm ? <Bad>{depthText}</Bad> : depthText}
+          </MetricRow>
+          <MetricRow
+            id="tentingArea"
+            ctx={c}
+            label={`Tenting area${cutName ? ` · ${cutName}` : ''}`}
+            className={mc ? 'clickable' : undefined}
+            onClick={mc ? () => onOpenCut(mc.index) : undefined}
+          >
+            {mp == null
+              ? DASH
+              : mp.tentingAreaMm2 > lim.areaMm2
+                ? <Bad>{cm2(mp.tentingAreaMm2)}</Bad>
+                : cm2(mp.tentingAreaMm2)}
+          </MetricRow>
+          {widest != null && widest !== main ? (
+            <MetricRow
+              id="tentingAreaMax"
+              ctx={c}
+              label={`Largest tenting area · cut ${result.cuts[widest].index}`}
+              className="clickable"
+              onClick={() => onOpenCut(result.cuts[widest].index)}
+            >
+              {cm2(profiles[widest].tentingAreaMm2)}
+            </MetricRow>
           ) : null}
-          {wp ? (
-            <tr>
-              <td>Coaptation depth (that cut)</td>
-              <td>{mm(wp.tentingHeightMm)}</td>
-            </tr>
-          ) : null}
+          <MetricRow id="tentingVolume" ctx={c} label="Tenting volume">
+            {ml(stats.tentingVolumeMm3)}
+          </MetricRow>
+          <MetricRow id="deepestPoint" ctx={c} label="Deepest leaflet point">
+            {stats.maxTentingMm > 0 ? `${mm(stats.maxTentingMm)}${segAt ? ` · ${segAt}` : ''}` : 'none below'}
+          </MetricRow>
         </tbody>
       </Table>
       <Table>
         <thead>
           <tr>
             <th>Segment</th>
-            <th>Max depth</th>
-            <th>Volume</th>
+            <th style={{ textAlign: 'right' }}>
+              <Tip id="segmentDepth" ctx={c}>
+                Deepest
+              </Tip>
+            </th>
+            <th style={{ textAlign: 'right' }}>
+              <Tip id="segmentVolume" ctx={c}>
+                Volume
+              </Tip>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -254,17 +355,17 @@ export function TentingSection({ result, frame, onOpenCut }) {
             return (
               <tr key={s}>
                 <td>{s}</td>
-                <td>{st.maxTentingMm > 0 ? mm(st.maxTentingMm) : '–'}</td>
-                <td>{st.tentingVolumeMm3 > 0 ? ml(st.tentingVolumeMm3) : '–'}</td>
+                <Val>{st.maxTentingMm > 0 ? mm(st.maxTentingMm) : DASH}</Val>
+                <Val>{st.tentingVolumeMm3 > 0 ? ml(st.tentingVolumeMm3) : DASH}</Val>
               </tr>
             );
           })}
         </tbody>
       </Table>
       <Note>
-        {isMv
-          ? 'Reported markers of recurrent functional MR after ring annuloplasty: coaptation depth ≥ 1 cm and tenting area ≥ 2.5 cm² (cut-offs vary between studies).'
-          : 'Reported markers of residual functional TR after annuloplasty (Fukuda et al.): tethering distance > 0.76 cm and tethering area > 1.63 cm².'}
+        Depths are distances below the {ref.short}, so they are positive. Red: above the reference cut-off (
+        {isMv ? 'coaptation depth > 11 mm, tenting area > 2.5 cm²' : 'tethering distance > 7.6 mm, area > 1.63 cm²'});
+        hover over a name for the source.
       </Note>
     </Section>
   );
@@ -305,17 +406,24 @@ const ChartSvg = styled.svg`
 const METRICS = [
   {
     key: 'maxHeightMm',
+    tip: 'chartHighest',
     label: 'Highest leaflet point',
-    format: (v) => mm(v),
+    format: (v) => mmSigned(v),
     refLine: PROLAPSE_MM,
-    refLabel: `${PROLAPSE_MM} mm`,
+    refLabel: `+${PROLAPSE_MM} mm`,
   },
-  { key: 'gapMm', label: 'Widest coaptation gap', format: (v) => (v > 0 ? mm(v) : 'none') },
-  { key: 'tentingVolumeMm3', label: 'Tenting volume', format: (v) => ml(v), scale: 1 / 1000 },
-  { key: 'orificeMm2', label: 'Orifice area', format: (v) => (v == null ? 'closed' : cm2(v)), scale: 1 / 100 },
+  { key: 'gapMm', tip: 'chartGap', label: 'Widest coaptation gap', format: (v) => (v > 0 ? mm(v) : 'none') },
+  { key: 'tentingVolumeMm3', tip: 'chartTenting', label: 'Tenting volume', format: (v) => ml(v), scale: 1 / 1000 },
+  {
+    key: 'orificeMm2',
+    tip: 'chartOrifice',
+    label: 'Orifice area',
+    format: (v) => (v == null ? 'closed' : cm2(v)),
+    scale: 1 / 100,
+  },
 ];
 
-function Sparkline({ metric, frames, closed, timeIndex, hover, setHover, onSeek, rFrames }) {
+function Sparkline({ metric, frames, closed, timeIndex, hover, setHover, onSeek, rFrames, ctx }) {
   const n = frames.length;
   const k = metric.scale || 1;
   const values = frames.map((f) => (f[metric.key] == null ? null : f[metric.key] * k));
@@ -352,9 +460,12 @@ function Sparkline({ metric, frames, closed, timeIndex, hover, setHover, onSeek,
   return (
     <div>
       <ChartHead>
-        <span>{metric.label}</span>
+        <Tip id={metric.tip} ctx={ctx}>
+          {metric.label}
+        </Tip>
         <span>
           T{shown + 1} <span className="value">{metric.format(frames[shown]?.[metric.key])}</span>
+          {closed[shown] ? '' : ' · open'}
         </span>
       </ChartHead>
       <ChartSvg
@@ -428,7 +539,7 @@ function Sparkline({ metric, frames, closed, timeIndex, hover, setHover, onSeek,
   );
 }
 
-export function CycleSection({ analysis, timeIndex, frameCount, onSeek, rFrames }) {
+export function CycleSection({ analysis, timeIndex, frameCount, onSeek, rFrames, ctx }) {
   const [hover, setHover] = useState(null);
   const { cycle, progress } = analysis;
   const jumps = cycle?.jumps;
@@ -438,6 +549,7 @@ export function CycleSection({ analysis, timeIndex, frameCount, onSeek, rFrames 
       {t != null ? ` · T${t + 1}` : ''}
     </SmallButton>
   );
+  const worst = jumps?.maxProlapse != null ? cycle.frames[jumps.maxProlapse] : null;
   return (
     <Section>
       <SectionHead>
@@ -465,26 +577,37 @@ export function CycleSection({ analysis, timeIndex, frameCount, onSeek, rFrames 
               setHover={setHover}
               onSeek={onSeek}
               rFrames={rFrames}
+              ctx={ctx}
             />
           ))}
           <Row>
-            {jump('Worst prolapse', jumps.maxProlapse, 'Frame with the highest leaflet point')}
-            {jump('Widest gap', jumps.widestGap, 'Frame with the widest coaptation gap')}
-            {jump('Most tenting', jumps.maxTenting, 'Frame with the largest tenting volume')}
-            {jump('Largest orifice', jumps.largestOrifice, 'Frame with the largest orifice (diastole)')}
+            {jump('Worst prolapse', jumps.maxProlapse, 'Closed frame with the highest leaflet point')}
+            {jump('Widest gap', jumps.widestGap, 'Closed frame with the widest coaptation gap')}
+            {jump('Most tenting', jumps.maxTenting, 'Closed frame with the largest tenting volume')}
+            {jump('Largest orifice', jumps.largestOrifice, 'Open frame with the largest orifice (diastole)')}
             {rFrames.length ? jump('R wave', rFrames[0], 'End-diastole on the ECG') : null}
           </Row>
           <Note>
-            Click a chart to go to that frame. Orange line: the current frame. Shaded: frames where the leaflets cover
-            the valve (closed, systole); the prolapse, gap and tenting jumps only look there, the orifice only in the
-            open frames.{rFrames.length ? ' R: R waves of the ECG (end-diastole).' : ''} The points and the annulus are
-            fixed; they do not follow the valve through the cycle.
+            Click a chart to go to that frame. Orange line: the current frame.{' '}
+            <Tip id="cycleShading" ctx={ctx}>
+              Shaded: closed frames
+            </Tip>{' '}
+            (systole); the prolapse, gap and tenting jumps only look there, the orifice only in the open frames.
+            {rFrames.length ? (
+              <>
+                {' '}
+                <Tip id="rWave" ctx={ctx}>
+                  R: R waves of the ECG
+                </Tip>
+                .
+              </>
+            ) : null}{' '}
+            The points and the annulus are fixed; they do not follow the valve through the cycle.
           </Note>
-          {jumps.maxProlapse != null && cycle.frames[jumps.maxProlapse].maxHeightMm > PROLAPSE_MM ? (
+          {worst && worst.maxHeightMm > PROLAPSE_MM ? (
             <div>
-              Worst prolapse <Bad>{mm(cycle.frames[jumps.maxProlapse].maxHeightMm)}</Bad>
-              {cycle.frames[jumps.maxProlapse].maxSegment ? ` in ${cycle.frames[jumps.maxProlapse].maxSegment}` : ''}{' '}
-              at T{jumps.maxProlapse + 1}
+              Worst prolapse <Bad>{mmSigned(worst.maxHeightMm)}</Bad>
+              {worst.maxSegment ? ` in ${worst.maxSegment}` : ''} at T{jumps.maxProlapse + 1}
             </div>
           ) : null}
         </>
