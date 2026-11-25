@@ -8,6 +8,10 @@ import {
   worldToFrame,
 } from '../../utils/mvSlicer';
 import { CUT_COLOR, labelAnchor, labelEnd } from './drawSlicerOverlay';
+import { HEIGHT_RANGE, heightColor, heightGradientCss } from '../../utils/heightColors';
+import { REFERENCES } from '../../utils/annulusFit';
+import { mmSigned } from '../../utils/format';
+import { insideValve } from '../../utils/valveAnalysis';
 
 export const KEY_PX = 260;
 export const KEY_SLAB_MM = 10;
@@ -15,35 +19,7 @@ export const KEY_SLAB_MM = 10;
 /** Grab radius for the point handles and lines, in CSS pixels. */
 const HIT_CSS_PX = 11;
 
-/** Height colour scale (mm above the valve plane, towards the atrium). */
-const STOPS = [
-  [-4, [66, 135, 245]],
-  [0, [225, 225, 225]],
-  [2, [255, 235, 59]],
-  [6, [244, 67, 54]],
-  [10, [156, 39, 176]],
-];
-export const HEIGHT_RANGE = [STOPS[0][0], STOPS[STOPS.length - 1][0]];
-
-export function heightColor(h) {
-  if (h <= STOPS[0][0]) return STOPS[0][1];
-  for (let i = 1; i < STOPS.length; i++) {
-    const [h1, c1] = STOPS[i];
-    if (h <= h1) {
-      const [h0, c0] = STOPS[i - 1];
-      const f = (h - h0) / (h1 - h0);
-      return c0.map((v, k) => Math.round(v + f * (c1[k] - v)));
-    }
-  }
-  return STOPS[STOPS.length - 1][1];
-}
-
-/** CSS gradient matching heightColor over HEIGHT_RANGE. */
-export function heightGradientCss() {
-  const [lo, hi] = HEIGHT_RANGE;
-  const stops = STOPS.map(([h, c]) => `rgb(${c.join(',')}) ${(((h - lo) / (hi - lo)) * 100).toFixed(1)}%`);
-  return `linear-gradient(to right, ${stops.join(', ')})`;
-}
+export { HEIGHT_RANGE, heightColor, heightGradientCss };
 
 function distToSegment(x, y, a, b) {
   const vx = b.x - a.x;
@@ -54,9 +30,24 @@ function distToSegment(x, y, a, b) {
 }
 
 /**
+ * Leaflet height under the cursor, from the height map (frame coordinates of
+ * the key map). null outside the valve outline.
+ */
+function readHeight(result, heights, f) {
+  const q = frameToWorld(heights.frame, f.x, f.y);
+  if (!insideValve(result, q)) return null;
+  const i = Math.floor((f.x - heights.frame.xMin) / heights.mmPerPx);
+  const j = Math.floor((f.y - heights.frame.yMin) / heights.mmPerPx);
+  const inGrid = i >= 0 && j >= 0 && i < heights.width && j < heights.height;
+  const h = inGrid ? heights.heights[j * heights.width + i] : NaN;
+  return { segment: result.segmentAt(q), h: Number.isNaN(h) ? null : h };
+}
+
+/**
  * En-face key map (valve-level slab MIP) with the numbered cut lines and the
  * picked points, which can be dragged; the cuts update as they move.
  * Optional layers: prolapse height colours, the orifice, a virtual clip band.
+ * With the height colours on, the height under the cursor is read out below.
  */
 export default function KeyMap({
   volume,
@@ -79,6 +70,7 @@ export default function KeyMap({
   // the image does not turn under the cursor as the axes change.
   const [dragFrame, setDragFrame] = useState(null);
   const [dragKey, setDragKey] = useState(null);
+  const [readout, setReadout] = useState(null);
   const frame = dragFrame || result.keyMap;
   const mmPerPx = (frame.xMax - frame.xMin) / KEY_PX;
 
@@ -329,7 +321,8 @@ export default function KeyMap({
       if (!d.raf) d.raf = requestAnimationFrame(flush);
       return;
     }
-    e.currentTarget.style.cursor = hitPoint(x, y, k) ? 'grab' : hitLine(x, y, k) ? 'pointer' : 'default';
+    e.currentTarget.style.cursor = hitPoint(x, y, k) ? 'grab' : hitLine(x, y, k) ? 'pointer' : 'crosshair';
+    setReadout(heights && heights.frame === frame ? readHeight(result, heights, pixelToFrame(frame, x, y, mmPerPx)) : null);
   };
 
   const onPointerUp = (e) => {
@@ -349,13 +342,40 @@ export default function KeyMap({
   };
 
   const names = result.keyPoints.map((p) => p.text).join(', ');
+  const refShort = (REFERENCES.find((r) => r.id === (result.reference || 'picked')) || REFERENCES[0]).short;
+  let readText = heights ? 'Hover over the valve for the leaflet height at a point.' : '';
+  if (readout) {
+    const where = readout.segment ? `${readout.segment} · ` : '';
+    readText =
+      readout.h == null
+        ? `${where}no leaflet found here`
+        : Math.abs(readout.h) < 0.05
+          ? `${where}level with the ${refShort}`
+          : `${where}${mmSigned(readout.h)} ${readout.h > 0 ? 'above' : 'below'} the ${refShort}`;
+  }
   return (
-    <canvas
-      ref={ref}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      title={`Drag ${names} to adjust them · Click a line to open that cut`}
-    />
+    <>
+      <canvas
+        ref={ref}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => setReadout(null)}
+        title={`Drag ${names} to adjust them · Click a line to open that cut`}
+      />
+      {heights ? (
+        <div
+          data-keymap-readout
+          style={{
+            minHeight: '1.1em',
+            fontSize: '0.66rem',
+            color: readout ? '#fff' : '#9e9e9e',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {readText}
+        </div>
+      ) : null}
+    </>
   );
 }

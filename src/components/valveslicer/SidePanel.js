@@ -2,7 +2,10 @@ import React from 'react';
 import styled from 'styled-components';
 import { CLIP_DEVICES, PROLAPSE_MM, TEER_STEPS, teerCriteria } from '../../utils/valveAnalysis';
 import { REFERENCES } from '../../utils/annulusFit';
-import { AnnulusSection, CycleSection, TentingSection } from './AnnulusPanel';
+import { DASH, cm2, mm, mmSigned } from '../../utils/format';
+import { infoContext } from '../../utils/metricInfo';
+import Tip from '../Tip';
+import { AnnulusSection, CycleSection, OpenFrameNote, TentingSection } from './AnnulusPanel';
 import { HEIGHT_RANGE, heightGradientCss } from './KeyMap';
 import {
   Section,
@@ -38,12 +41,28 @@ const LegendTicks = styled.div`
   }
 `;
 
-const mm = (v, d = 1) => (v == null ? '–' : `${v.toFixed(d)} mm`);
+const Val = styled.td`
+  text-align: right;
+  white-space: nowrap;
+`;
+
+const RTh = styled.th`
+  text-align: right !important;
+`;
+
 const LEGEND_TICKS = [-4, 0, 2, 6, 10];
 
-function ProlapseSection({ result, frame, showHeights, setShowHeights }) {
+const refOf = (id) => REFERENCES.find((r) => r.id === id) || REFERENCES[0];
+
+/** Height with prolapse (> +2 mm) in red. */
+function Height({ v }) {
+  return v != null && v > PROLAPSE_MM ? <Bad>{mmSigned(v)}</Bad> : mmSigned(v);
+}
+
+function ProlapseSection({ result, frame, showHeights, setShowHeights, ctx, closedNow, timeIndex }) {
   const { stats } = frame.map;
   const [lo, hi] = HEIGHT_RANGE;
+  const isMv = result.kind === 'mv';
   return (
     <Section>
       <SectionHead>
@@ -52,37 +71,69 @@ function ProlapseSection({ result, frame, showHeights, setShowHeights }) {
           {showHeights ? 'Colours on' : 'Colours off'}
         </SmallButton>
       </SectionHead>
-      <Legend />
+      <Tip id="leafletHeight" ctx={ctx}>
+        <Legend />
+      </Tip>
       <LegendTicks>
         {LEGEND_TICKS.map((t) => (
           <span key={t} style={{ left: `${((t - lo) / (hi - lo)) * 100}%` }}>
-            {t > 0 ? `+${t}` : t}
+            {t > 0 ? `+${t}` : t < 0 ? `−${-t}` : t}
           </span>
         ))}
       </LegendTicks>
       <Note>
-        Leaflet height above the {(REFERENCES.find((r) => r.id === stats.reference) || REFERENCES[0]).short}, in mm
-        (towards the {result.kind === 'tv' ? 'RA' : 'LA'} is positive). Prolapse: &gt; {PROLAPSE_MM} mm.
+        Leaflet height above the {refOf(stats.reference).short}, in mm: + towards the {ctx.atrium}, − towards the{' '}
+        {ctx.ventricle}. Prolapse: more than +{PROLAPSE_MM} mm in systole. Hover over the map for the height at a
+        point.
       </Note>
-      <div>
-        Max{' '}
-        {stats.maxHeight != null && stats.maxHeight > PROLAPSE_MM ? (
-          <Bad>{mm(stats.maxHeight)}</Bad>
-        ) : (
-          mm(stats.maxHeight)
-        )}{' '}
-        {stats.maxSegment ? `in ${stats.maxSegment}` : ''}
-        {stats.prolapseAreaMm2 > 0 ? ` · ${stats.prolapseAreaMm2.toFixed(0)} mm² above ${PROLAPSE_MM} mm` : ''}
-        {result.kind === 'mv' && stats.prolapseWidthMm > 0
-          ? ` · ${mm(stats.prolapseWidthMm)} wide along the coaptation line`
-          : ''}
-      </div>
+      <OpenFrameNote closedNow={closedNow} timeIndex={timeIndex} />
+      <Table>
+        <tbody>
+          <tr>
+            <td>
+              <Tip id="maxHeight" ctx={ctx}>
+                Highest point
+              </Tip>
+            </td>
+            <Val>
+              <Height v={stats.maxHeight} />
+              {stats.maxSegment ? ` · ${stats.maxSegment}` : ''}
+            </Val>
+          </tr>
+          <tr>
+            <td>
+              <Tip id="prolapseArea" ctx={ctx}>
+                Area above +{PROLAPSE_MM} mm
+              </Tip>
+            </td>
+            <Val>{stats.prolapseAreaMm2 > 0 ? cm2(stats.prolapseAreaMm2) : 'none'}</Val>
+          </tr>
+          {isMv ? (
+            <tr>
+              <td>
+                <Tip id="prolapseWidth" ctx={ctx}>
+                  Prolapse width
+                </Tip>
+              </td>
+              <Val>{stats.prolapseWidthMm > 0 ? mm(stats.prolapseWidthMm) : 'none'}</Val>
+            </tr>
+          ) : null}
+        </tbody>
+      </Table>
       <Table>
         <thead>
           <tr>
             <th>Segment</th>
-            <th>Max</th>
-            <th>Area &gt; {PROLAPSE_MM} mm</th>
+            <RTh>
+              <Tip id="segmentMax" ctx={ctx}>
+                Highest
+              </Tip>
+            </RTh>
+            <RTh>
+              <Tip id="segmentProlapseArea" ctx={ctx}>
+                Area &gt; +{PROLAPSE_MM} mm
+              </Tip>
+            </RTh>
           </tr>
         </thead>
         <tbody>
@@ -92,8 +143,10 @@ function ProlapseSection({ result, frame, showHeights, setShowHeights }) {
             return (
               <tr key={s}>
                 <td>{pro ? <Bad>{s}</Bad> : s}</td>
-                <td>{pro ? <Bad>{mm(st.maxHeight)}</Bad> : mm(st.maxHeight)}</td>
-                <td>{st.prolapseAreaMm2 > 0 ? `${st.prolapseAreaMm2.toFixed(0)} mm²` : '–'}</td>
+                <Val>
+                  <Height v={st.maxHeight} />
+                </Val>
+                <Val>{st.prolapseAreaMm2 > 0 ? cm2(st.prolapseAreaMm2) : DASH}</Val>
               </tr>
             );
           })}
@@ -103,7 +156,7 @@ function ProlapseSection({ result, frame, showHeights, setShowHeights }) {
   );
 }
 
-function CutsSection({ result, frame, onOpenCut }) {
+function CutsSection({ result, frame, onOpenCut, ctx }) {
   return (
     <Section>
       <SectionHead>Cuts</SectionHead>
@@ -112,33 +165,53 @@ function CutsSection({ result, frame, onOpenCut }) {
           <tr>
             <th>#</th>
             <th>Cut</th>
-            <th>Max</th>
-            <th>Gap</th>
-            <th title="Depth of the leaflets below the reference at the coaptation">Tent</th>
+            <RTh>
+              <Tip id="cutMax" ctx={ctx}>
+                Highest
+              </Tip>
+            </RTh>
+            <RTh>
+              <Tip id="cutGap" ctx={ctx}>
+                Gap
+              </Tip>
+            </RTh>
+            <RTh>
+              <Tip id="cutDepth" ctx={ctx}>
+                Depth
+              </Tip>
+            </RTh>
           </tr>
         </thead>
         <tbody>
           {result.cuts.map((cut, i) => {
             const p = frame.profiles[i];
-            const pro = p.maxHeight != null && p.maxHeight > PROLAPSE_MM;
             return (
-              <tr key={cut.index} className="clickable" onClick={() => onOpenCut(cut.index)}>
+              <tr key={cut.index} className="clickable" onClick={() => onOpenCut(cut.index)} title="Open this cut">
                 <td>{cut.index}</td>
                 <td>{cut.label}</td>
-                <td>{pro ? <Bad>{mm(p.maxHeight)}</Bad> : mm(p.maxHeight)}</td>
-                <td>{p.gapMm > 0 ? <Warn>{mm(p.gapMm)}</Warn> : '–'}</td>
-                <td>{p.tentingHeightMm > 0.5 ? mm(p.tentingHeightMm) : '–'}</td>
+                <Val>
+                  <Height v={p.maxHeight} />
+                </Val>
+                <Val>{p.gapMm > 0 ? <Warn>{mm(p.gapMm)}</Warn> : DASH}</Val>
+                <Val>{p.tentingHeightMm > 0.5 ? mm(p.tentingHeightMm) : DASH}</Val>
               </tr>
             );
           })}
         </tbody>
       </Table>
+      <Note>Highest: + above / − below the reference. Depth: coaptation depth below it. Click a row to open the cut.</Note>
     </Section>
   );
 }
 
 function ThresholdSection({ analysis }) {
   const { frame, thresholdOverride, setThresholdOverride } = analysis;
+  const lv = frame.levels;
+  const extra = lv
+    ? `This frame: blood ≈ ${Math.round(lv.blood)}, tissue ≈ ${Math.round(lv.tissue)}, so Auto = ${Math.round(
+        lv.threshold
+      )}.${thresholdOverride != null ? ` You set ${Math.round(thresholdOverride)}.` : ''}`
+    : null;
   return (
     <Section>
       <SectionHead>
@@ -160,15 +233,27 @@ function ThresholdSection({ analysis }) {
           value={Math.round(frame.threshold)}
           onChange={(e) => setThresholdOverride(Number(e.target.value))}
           style={{ flex: 1, accentColor: '#4caf50' }}
+          aria-label="Tissue threshold (grey level)"
         />
-        <span>{Math.round(frame.threshold)}</span>
+        <Tip id="threshold" extra={extra}>
+          {Math.round(frame.threshold)}
+        </Tip>
       </Row>
-      <Note>Raise it if speckle in the atrium shows as tissue; lower it if thin leaflets are missed.</Note>
+      <Note>Grey level 0–255. Raise it if speckle in the atrium shows as tissue; lower it if thin leaflets are missed.</Note>
     </Section>
   );
 }
 
-function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCount, onOpenCut }) {
+const CRITERIA_TIPS = {
+  'Coaptation length': 'crCoaptLength',
+  'Coaptation depth': 'crCoaptDepth',
+  'Tip-to-tip (flail) gap': 'crFlailGap',
+  'Prolapse width (this frame)': 'crFlailWidth',
+  'Posterior leaflet length': 'crPosteriorLength',
+  'MVA (planimetry)': 'crMva',
+};
+
+function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCount, onOpenCut, ctx }) {
   const cut = result.cuts.find((c) => c.index === teer.cutIndex) || result.cuts[0];
   const nextStep = TEER_STEPS.find((s) => !teer.points[s.key]);
   const orifice = analysis.cycle?.best;
@@ -177,6 +262,7 @@ function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCoun
     flailWidthMm: frame.map.stats.prolapseWidthMm || null,
     mvaMm2: orifice ? orifice.areaMm2 : null,
   });
+  const refShort = refOf(result.reference).short;
   return (
     <Section>
       <SectionHead>TEER planning</SectionHead>
@@ -223,16 +309,28 @@ function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCoun
         <Table>
           <tbody>
             <tr>
-              <td>{teer.measures.leaflets.left} leaflet</td>
-              <td>{mm(teer.measures.lengthLMm)}</td>
+              <td>
+                <Tip id="teerLeafletLength" ctx={ctx}>
+                  {teer.measures.leaflets.left} leaflet
+                </Tip>
+              </td>
+              <Val>{mm(teer.measures.lengthLMm)}</Val>
             </tr>
             <tr>
-              <td>{teer.measures.leaflets.right} leaflet</td>
-              <td>{mm(teer.measures.lengthRMm)}</td>
+              <td>
+                <Tip id="teerLeafletLength" ctx={ctx}>
+                  {teer.measures.leaflets.right} leaflet
+                </Tip>
+              </td>
+              <Val>{mm(teer.measures.lengthRMm)}</Val>
             </tr>
             <tr>
-              <td>Annulus (this cut)</td>
-              <td>{mm(teer.measures.annulusMm)}</td>
+              <td>
+                <Tip id="teerAnnulus" ctx={ctx}>
+                  Annulus (this cut)
+                </Tip>
+              </td>
+              <Val>{mm(teer.measures.annulusMm)}</Val>
             </tr>
           </tbody>
         </Table>
@@ -255,9 +353,13 @@ function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCoun
       {analysis.cycle ? (
         orifice ? (
           <div>
-            MVA <strong>{(orifice.areaMm2 / 100).toFixed(2)} cm²</strong> at T{analysis.cycle.bestFrame + 1}/
-            {frameCount}, {orifice.depthMm.toFixed(1)} mm below the{' '}
-            {(REFERENCES.find((r) => r.id === result.reference) || REFERENCES[0]).short}
+            <Tip id="mva" ctx={ctx}>
+              MVA
+            </Tip>{' '}
+            <strong>{cm2(orifice.areaMm2)}</strong> at T{analysis.cycle.bestFrame + 1}/{frameCount},{' '}
+            <Tip id="mvaDepth" ctx={ctx}>
+              {orifice.depthMm >= 0.5 ? `${mm(orifice.depthMm)} below the ${refShort}` : `at the ${refShort}`}
+            </Tip>
             {analysis.cycle.bestFrame !== timeIndex ? ' (go to that frame to see it)' : ''}
           </div>
         ) : (
@@ -285,8 +387,10 @@ function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCoun
       </Row>
       {clip.result ? (
         <div>
-          After clip ≈ <strong>{(clip.result.afterMm2 / 100).toFixed(2)} cm²</strong> (
-          {(clip.result.sideAMm2 / 100).toFixed(2)} + {(clip.result.sideBMm2 / 100).toFixed(2)})
+          <Tip id="afterClip" ctx={ctx}>
+            After clip
+          </Tip>{' '}
+          ≈ <strong>{cm2(clip.result.afterMm2)}</strong> ({cm2(clip.result.sideAMm2)} + {cm2(clip.result.sideBMm2)})
           <Note>
             Rough geometric estimate: closes a {clip.result.bandMm} mm band across the orifice (device width plus
             2 mm of approximated tissue each side). Not a validated predictor.
@@ -300,36 +404,31 @@ function TeerSection({ result, frame, analysis, teer, clip, timeIndex, frameCoun
         <thead>
           <tr>
             <th>Criterion</th>
-            <th>Value</th>
-            <th>Ref.</th>
+            <RTh>Value</RTh>
+            <RTh>Ref.</RTh>
           </tr>
         </thead>
         <tbody>
-          {criteria.map((r) => (
-            <tr key={r.label}>
-              <td>{r.label}</td>
-              <td>
-                {r.value == null ? (
-                  '–'
-                ) : r.ok ? (
-                  <Good>
-                    {r.value.toFixed(r.unit === 'cm²' ? 2 : 1)} {r.unit}
-                  </Good>
-                ) : (
-                  <Bad>
-                    {r.value.toFixed(r.unit === 'cm²' ? 2 : 1)} {r.unit}
-                  </Bad>
-                )}
-              </td>
-              <td>{r.rule}</td>
-            </tr>
-          ))}
+          {criteria.map((r) => {
+            const text = r.value == null ? DASH : r.unit === 'cm²' ? cm2(r.value * 100) : mm(r.value);
+            return (
+              <tr key={r.label}>
+                <td>
+                  <Tip id={CRITERIA_TIPS[r.label]} ctx={ctx}>
+                    {r.label}
+                  </Tip>
+                </td>
+                <Val>{r.value == null ? DASH : r.ok ? <Good>{text}</Good> : <Bad>{text}</Bad>}</Val>
+                <Val>{r.rule}</Val>
+              </tr>
+            );
+          })}
         </tbody>
       </Table>
       <Note>
-        Reference values are the EVEREST anatomical criteria. Prolapse width is measured along the coaptation line
-        from the prolapse map of the current frame (use systole). For planning discussion only; confirm every value
-        on the images.
+        Coaptation, flail and MVA limits are the EVEREST anatomical criteria; posterior leaflet length ≥ 10 mm is a
+        commonly used additional one. Prolapse width comes from the prolapse map of the current frame (use systole).
+        For planning discussion only; confirm every value on the images.
       </Note>
     </Section>
   );
@@ -340,21 +439,39 @@ export default function SidePanel(props) {
     props;
   const { frame } = analysis;
   if (!frame) return null;
+  const ctx = infoContext(result, refOf(result.reference || 'picked').short);
+  const closedNow = analysis.cycle ? Boolean(analysis.cycle.jumps.closed[timeIndex]) : null;
   return (
     <>
-      <AnnulusSection result={result} annulus={annulus} />
-      <ProlapseSection result={result} frame={frame} showHeights={showHeights} setShowHeights={setShowHeights} />
-      <TentingSection result={result} frame={frame} onOpenCut={onOpenCut} />
-      <CutsSection result={result} frame={frame} onOpenCut={onOpenCut} />
+      <AnnulusSection result={result} annulus={annulus} ctx={ctx} />
+      <ProlapseSection
+        result={result}
+        frame={frame}
+        showHeights={showHeights}
+        setShowHeights={setShowHeights}
+        ctx={ctx}
+        closedNow={closedNow}
+        timeIndex={timeIndex}
+      />
+      <TentingSection
+        result={result}
+        frame={frame}
+        onOpenCut={onOpenCut}
+        ctx={ctx}
+        closedNow={closedNow}
+        timeIndex={timeIndex}
+      />
+      <CutsSection result={result} frame={frame} onOpenCut={onOpenCut} ctx={ctx} />
       <CycleSection
         analysis={analysis}
         timeIndex={timeIndex}
         frameCount={frameCount}
         onSeek={onSeek}
         rFrames={rFrames}
+        ctx={ctx}
       />
       <ThresholdSection analysis={analysis} />
-      {result.kind === 'mv' ? <TeerSection {...props} frame={frame} /> : null}
+      {result.kind === 'mv' ? <TeerSection {...props} frame={frame} ctx={ctx} /> : null}
     </>
   );
 }

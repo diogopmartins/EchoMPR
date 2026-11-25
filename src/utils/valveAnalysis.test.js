@@ -17,7 +17,9 @@ import {
   frameMetrics,
   estimateThreshold,
   heightMap,
+  leafletHeight,
   makeSampler,
+  mergeCutExtremes,
   orificeOverCycle,
   teerCriteria,
   teerMeasures,
@@ -209,5 +211,48 @@ describe('cycle metrics', () => {
     // Only the leaflet thickness sits below the plane
     expect(map.stats.maxTentingMm).toBeLessThan(1);
     expect(map.stats.tentingVolumeMm3).toBeLessThan(0.2 * map.stats.foundAreaMm2);
+  });
+});
+
+describe('leaflet surface search', () => {
+  // Valve axis along +z (towards the ventricle); the search runs from 15 mm
+  // above the plane point (z = 5) to 14 mm below it (z = 34).
+  const q = [0, 0, 20];
+  const down = [0, 0, 1];
+  const leaflet = (z) => z >= 18 && z <= 19.5;
+
+  test('finds the leaflet 2 mm above the plane', () => {
+    const sample = (p) => (leaflet(p[2]) ? 200 : 20);
+    expect(leafletHeight(sample, q, down, 100)).toBeCloseTo(2, 1);
+  });
+
+  test('tissue at the start of the search (a wall) is not read as a leaflet at +15 mm', () => {
+    const sample = (p) => (p[2] < 8 || leaflet(p[2]) ? 200 : 20);
+    expect(leafletHeight(sample, q, down, 100)).toBeCloseTo(2, 1);
+  });
+
+  test('all tissue: no leaflet surface', () => {
+    expect(leafletHeight(() => 200, q, down, 100)).toBeNull();
+  });
+});
+
+describe('summary agrees with the cuts', () => {
+  test('no cut reads higher or deeper than the summary; the cycle reads the same as the panel', () => {
+    const sample = sampleAt(SYSTOLE);
+    const thr = thrAt(SYSTOLE);
+    const map = heightMap(sample, mvResult, thr);
+    const profiles = mvResult.cuts.map((cut) => cutProfile(sample, mvResult, cut, thr));
+    const st = mergeCutExtremes(map.stats, profiles, mvResult);
+    const cutHighest = Math.max(...profiles.filter((p) => p.maxHeight != null).map((p) => p.maxHeight));
+    const cutDeepest = Math.max(0, ...profiles.filter((p) => p.tentingHeightMm != null).map((p) => p.tentingHeightMm));
+    expect(st.maxHeight).toBeGreaterThanOrEqual(cutHighest);
+    expect(st.maxTentingMm).toBeGreaterThanOrEqual(cutDeepest);
+    // Per segment too, and the map itself is left as it was
+    const segMax = Math.max(...Object.values(st.segments).map((x) => x.maxHeight ?? -Infinity));
+    expect(segMax).toBeCloseTo(st.maxHeight, 6);
+    expect(map.stats.maxHeight).toBeLessThanOrEqual(st.maxHeight);
+    const fm = frameMetrics(sample, mvResult, thr, { withOrifice: false });
+    expect(fm.maxHeightMm).toBeCloseTo(st.maxHeight, 6);
+    expect(fm.maxTentingMm).toBeCloseTo(st.maxTentingMm, 6);
   });
 });

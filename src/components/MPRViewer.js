@@ -36,6 +36,10 @@ import {
   dot as dotVec,
   add as addVec,
   sub as subVec,
+  cross as crossVec,
+  scale as scaleVec,
+  normalize as normalizeVec,
+  mmToScene,
 } from '../utils/mprGeometry';
 import {
   anchorPairAtTime,
@@ -63,6 +67,12 @@ import { valveUrl } from '../utils/exampleStudy';
 import { MV_POINTS, buildMvSlicer } from '../utils/mvSlicer';
 import { TV_POINTS, buildTvSlicer } from '../utils/tvSlicer';
 import useValveSlicer from './valveslicer/useValveSlicer';
+import useLeafletModel from './valveslicer/useLeafletModel';
+import { HEIGHT_RANGE, heightGradientCss } from '../utils/heightColors';
+import { REFERENCES } from '../utils/annulusFit';
+import { cm2 as formatCm2, mm as formatMm } from '../utils/format';
+import { infoContext } from '../utils/metricInfo';
+import Tip from './Tip';
 import drawSlicerOverlay from './valveslicer/drawSlicerOverlay';
 import SlicerView from './valveslicer/SlicerView';
 import {
@@ -414,6 +424,61 @@ const SliceCanvas = styled.canvas`
   background: #000;
 `;
 
+const ModelLegend = styled.div`
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 2;
+  width: 180px;
+  padding: 0.3rem 0.45rem 0.15rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #e0e0e0;
+  font-size: 0.62rem;
+  pointer-events: auto;
+
+  .bar {
+    height: 7px;
+    border-radius: 3px;
+    margin-top: 0.25rem;
+  }
+  .ticks {
+    position: relative;
+    height: 0.8rem;
+    color: #bdbdbd;
+  }
+  .ticks span {
+    position: absolute;
+    transform: translateX(-50%);
+  }
+`;
+
+const ModelTools = styled.div`
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  display: flex;
+  gap: 4px;
+
+  button {
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid #4a4a4a;
+    color: #fff;
+    border-radius: 4px;
+    padding: 0.2rem 0.45rem;
+    font-size: 0.66rem;
+    cursor: pointer;
+  }
+  button:hover {
+    background: rgba(60, 60, 60, 0.85);
+  }
+  button.on {
+    background: #4caf50;
+    border-color: #4caf50;
+  }
+`;
+
 const PaneTools = styled.div`
   position: absolute;
   top: 8px;
@@ -686,13 +751,13 @@ function lineHandlesCss(cx, cy, dirU, dirV, dw, dh) {
   ];
 }
 
+/** Lengths always in mm and areas in cm², as in the valve panels. */
 function formatDistance(mm) {
-  if (mm < 10) return `${mm.toFixed(1)} mm`;
-  return `${(mm / 10).toFixed(2)} cm`;
+  return formatMm(mm);
 }
 
 function formatArea(mm2) {
-  return `${(mm2 / 100).toFixed(2)} cm²`;
+  return formatCm2(mm2);
 }
 
 function drawMeasureLabel(ctx, x, y, text, color = '#ffb74d') {
@@ -1956,6 +2021,29 @@ const MPRViewer = () => {
   };
   const activeSlicer = mv.open && mv.result?.ok ? mv : tv.open && tv.result?.ok ? tv : null;
   const slicerOverlays = useMemo(() => [mv.overlay, tv.overlay], [mv.overlay, tv.overlay]);
+  // 3D leaflet models for the 3D pane (not built while the cut view covers it)
+  const mvModel = useLeafletModel(volume, timeIndex, mv, !activeSlicer);
+  const tvModel = useLeafletModel(volume, timeIndex, tv, !activeSlicer);
+  const leafletModels = useMemo(() => [mvModel, tvModel].filter(Boolean), [mvModel, tvModel]);
+  const [modelOnly, setModelOnly] = useState(false);
+  const [viewRequest, setViewRequest] = useState(null);
+  /** Point the 3D camera at the valve en-face: from the atrium (as the key map) or the ventricle. */
+  const viewValve = (fromVentricle) => {
+    const m = leafletModels[0];
+    if (!m || !volume) return;
+    const { center, right, down, sizeMm } = m.view;
+    const x = fromVentricle ? scaleVec(right, -1) : right;
+    const y = scaleVec(down, -1);
+    const size = physicalSizeMm(volume);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    setViewRequest({
+      token: Date.now(),
+      target: mmToScene(volume, center),
+      dir: normalizeVec(crossVec(x, y)),
+      up: normalizeVec(y),
+      distance: Math.min(3, Math.max(0.8, (2.6 * sizeMm) / maxDim)),
+    });
+  };
   const [cameraResetToken, setCameraResetToken] = useState(0);
   const [exporting, setExporting] = useState(null);
   const [openSections, setOpenSections] = useState(DEFAULT_SECTIONS);
@@ -2391,7 +2479,14 @@ const MPRViewer = () => {
           {ecg ? (
             <MeasureMetaLine>
               {ecg.label || 'ECG'}
-              {ecg.heartRateBpm ? ` · ${Math.round(ecg.heartRateBpm)} bpm` : ''}
+              {ecg.heartRateBpm ? (
+                <>
+                  {' · '}
+                  <Tip id="heartRate">{Math.round(ecg.heartRateBpm)} bpm</Tip>
+                </>
+              ) : (
+                ''
+              )}
             </MeasureMetaLine>
           ) : null}
           <MeasureMetaLine>
@@ -2471,10 +2566,20 @@ const MPRViewer = () => {
             <MeasureMetaLine style={{ color: '#e57373' }}>{mv.result.error}</MeasureMetaLine>
           ) : null}
           {mv.result?.ok ? (
-            <MeasureMetaLine>
-              Cuts {mv.result.spacingMm.toFixed(1)} mm apart along a{' '}
-              {mv.result.coaptationLengthMm.toFixed(0)} mm coaptation line
-            </MeasureMetaLine>
+            <>
+              <Button
+                $grow
+                $active={mv.showModel}
+                onClick={() => mv.setShowModel((v) => !v)}
+                title="Leaflet model in the 3D view, coloured by height"
+              >
+                {mv.showModel ? 'Hide 3D leaflet model' : 'Show 3D leaflet model'}
+              </Button>
+              <MeasureMetaLine>
+                Cuts <Tip id="cutSpacing">{formatMm(mv.result.spacingMm)} apart</Tip> along a{' '}
+                <Tip id="coaptationLine">{formatMm(mv.result.coaptationLengthMm, 0)}</Tip> coaptation line
+              </MeasureMetaLine>
+            </>
           ) : null}
         </SidebarSection>
 
@@ -2535,6 +2640,16 @@ const MPRViewer = () => {
           >
             {tv.open ? 'Back to MPR' : 'Show 9 cuts'}
           </Button>
+          {tv.result?.ok ? (
+            <Button
+              $grow
+              $active={tv.showModel}
+              onClick={() => tv.setShowModel((v) => !v)}
+              title="Leaflet model in the 3D view, coloured by height"
+            >
+              {tv.showModel ? 'Hide 3D leaflet model' : 'Show 3D leaflet model'}
+            </Button>
+          ) : null}
           {tv.result && !tv.result.ok ? (
             <MeasureMetaLine style={{ color: '#e57373' }}>{tv.result.error}</MeasureMetaLine>
           ) : null}
@@ -2557,7 +2672,7 @@ const MPRViewer = () => {
           </Button>
           <SliderRow>
             <Label $wide="4.8rem">
-              {slabMm < 1 ? 'Thin' : `${slabMm} mm`}
+              <Tip id="slab">{slabMm < 1 ? 'Thin' : `${slabMm} mm`}</Tip>
             </Label>
             <Slider
               type="range"
@@ -2882,7 +2997,7 @@ const MPRViewer = () => {
                   >
                     <MeasureLabel $color={measureColor(m)}>{m.label}</MeasureLabel>
                     <MeasureValue>
-                      {measurementCaption(m)}
+                      <Tip id={m.type === 'distance' ? 'distance' : 'area'}>{measurementCaption(m)}</Tip>
                       <MeasureMetaLine>
                         T{m.timeIndex + 1} · {AXIS_META[m.axis]?.short || m.axis}
                       </MeasureMetaLine>
@@ -3042,10 +3157,12 @@ const MPRViewer = () => {
         </SidebarSection>
 
         <Meta>
-          {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
-          × {volume.dims.t}
-          <br />
-          {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×{sizeMm.z.toFixed(0)} mm
+          <Tip id="volumeSize">
+            {meta.modality || 'US'} · {volume.dims.x}×{volume.dims.y}×{volume.dims.z}{' '}
+            × {volume.dims.t}
+            <br />
+            {sizeMm.x.toFixed(0)}×{sizeMm.y.toFixed(0)}×{sizeMm.z.toFixed(0)} mm
+          </Tip>
         </Meta>
       </ControlSidebar>
 
@@ -3169,6 +3286,60 @@ const MPRViewer = () => {
           }}
         >
           <PaneLabel $color="#4caf50">3D Volume</PaneLabel>
+          {leafletModels.length ? (
+            <ModelLegend>
+              <div>
+                <Tip
+                  id="leafletHeight"
+                  ctx={infoContext(
+                    { kind: leafletModels[0].kind },
+                    (REFERENCES.find((r) => r.id === leafletModels[0].reference) || REFERENCES[0]).short
+                  )}
+                  extra="Hover over the leaflets for the height at a point."
+                >
+                  Leaflet height (mm) from the{' '}
+                  {(REFERENCES.find((r) => r.id === leafletModels[0].reference) || REFERENCES[0]).short}
+                </Tip>
+              </div>
+              <div className="bar" style={{ background: heightGradientCss() }} />
+              <div className="ticks">
+                {[-4, 0, 2, 6, 10].map((t) => (
+                  <span
+                    key={t}
+                    style={{ left: `${((t - HEIGHT_RANGE[0]) / (HEIGHT_RANGE[1] - HEIGHT_RANGE[0])) * 100}%` }}
+                  >
+                    {t > 0 ? `+${t}` : t < 0 ? `−${-t}` : t}
+                  </span>
+                ))}
+              </div>
+            </ModelLegend>
+          ) : null}
+          {leafletModels.length ? (
+            <ModelTools>
+              <button
+                type="button"
+                onClick={() => viewValve(false)}
+                title={
+                  leafletModels[0].kind === 'tv'
+                    ? 'Look at the valve from the RA, septal leaflet at 6 o’clock'
+                    : 'Surgical view: from the LA, AoV at 12 o’clock'
+                }
+              >
+                {leafletModels[0].kind === 'tv' ? 'From RA' : 'Surgical view'}
+              </button>
+              <button type="button" onClick={() => viewValve(true)} title="Look at the valve from the ventricle">
+                {leafletModels[0].kind === 'tv' ? 'From RV' : 'From LV'}
+              </button>
+              <button
+                type="button"
+                className={modelOnly ? 'on' : ''}
+                onClick={() => setModelOnly((v) => !v)}
+                title="Hide the volume rendering and show only the leaflet model"
+              >
+                Model only
+              </button>
+            </ModelTools>
+          ) : null}
           <PaneTools>
             <IconBtn
               type="button"
@@ -3238,6 +3409,9 @@ const MPRViewer = () => {
               liveDraft={liveDraft}
               valvePositions={drawnValve}
               valvePose={drawnValve ? shownPose : null}
+              leafletModels={leafletModels}
+              showVolume={!(modelOnly && leafletModels.length)}
+              viewRequest={viewRequest}
               cameraResetToken={cameraResetToken}
               forceHighQuality={Boolean(exporting)}
             />

@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { getVolumeAtTime, physicalSizeMm } from '../utils/philipsVolume';
 import { mmToUnitBox, voxelToMm } from '../utils/mprGeometry';
 import { localToWorld, valveFrames } from '../utils/valveModel';
+import { REFERENCES } from '../utils/annulusFit';
+import { mmSigned } from '../utils/format';
 
 const vertexShader = /* glsl */ `
 out vec3 vOrigin;
@@ -487,6 +489,141 @@ function ValveSolid({ volume, positions, pose, mprCenter, mprBasis }) {
   );
 }
 
+const MODEL_LABEL_STYLE = {
+  pointerEvents: 'none',
+  font: '600 10px Arial, Helvetica, sans-serif',
+  color: '#ffffff',
+  textShadow: '0 0 3px #000, 0 0 2px #000',
+  whiteSpace: 'nowrap',
+};
+
+const MODEL_HOVER_STYLE = {
+  pointerEvents: 'none',
+  font: '600 11px Arial, Helvetica, sans-serif',
+  color: '#ffffff',
+  background: 'rgba(18, 18, 18, 0.88)',
+  border: '1px solid #5a5a5a',
+  borderRadius: 4,
+  padding: '2px 6px',
+  whiteSpace: 'nowrap',
+  transform: 'translate(10px, -50%)',
+};
+
+/** Hover text for a model vertex: segment, then the height above or below the reference. */
+function modelHoverText(model, v) {
+  const h = model.heights?.[v];
+  if (h == null || Number.isNaN(h)) return null;
+  const ref = (REFERENCES.find((r) => r.id === model.reference) || REFERENCES[0]).short;
+  const seg = model.vertexSegments?.[v];
+  const where = seg ? `${seg} · ` : '';
+  if (Math.abs(h) < 0.05) return `${where}level with the ${ref}`;
+  return `${where}${mmSigned(h)} ${h > 0 ? 'above' : 'below'} the ${ref}`;
+}
+
+/**
+ * Leaflet model of a valve slicer (see utils/leafletModel): the leaflet
+ * surface coloured by height, the annulus, the coaptation line, the key
+ * points and the segment labels. Volume-local mm are mapped into the unit box.
+ */
+function LeafletModel({ volume, model }) {
+  const toBox = (mm) => mmToUnitBox(volume, mm);
+  const geometry = useMemo(() => {
+    const n = model.positions.length / 3;
+    const pos = new Float32Array(n * 3);
+    const col = new Float32Array(n * 3);
+    const c = new THREE.Color();
+    for (let v = 0; v < n; v++) {
+      const u = mmToUnitBox(volume, [model.positions[3 * v], model.positions[3 * v + 1], model.positions[3 * v + 2]]);
+      pos[3 * v] = u[0];
+      pos[3 * v + 1] = u[1];
+      pos[3 * v + 2] = u[2];
+      c.setRGB(model.colors[3 * v], model.colors[3 * v + 1], model.colors[3 * v + 2], THREE.SRGBColorSpace);
+      col[3 * v] = c.r;
+      col[3 * v + 1] = c.g;
+      col[3 * v + 2] = c.b;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setIndex(new THREE.BufferAttribute(model.indices, 1));
+    g.computeVertexNormals();
+    return g;
+  }, [volume, model]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  const annulus = useMemo(() => {
+    const pts = model.annulus.map((p) => mmToUnitBox(volume, p));
+    return pts.length > 1 ? [...pts, pts[0]] : null;
+  }, [volume, model]);
+  const guides = useMemo(
+    () => model.guides.filter((g) => g.length > 1).map((g) => g.map((p) => mmToUnitBox(volume, p))),
+    [volume, model]
+  );
+
+  // Height under the pointer: the nearest corner of the face that was hit
+  const [hover, setHover] = useState(null);
+  useEffect(() => setHover(null), [model]);
+  const onPointerMove = (e) => {
+    e.stopPropagation();
+    if (!e.face) return;
+    const local = e.object.worldToLocal(e.point.clone());
+    const pos = geometry.attributes.position;
+    let best = e.face.a;
+    let bestD = Infinity;
+    [e.face.a, e.face.b, e.face.c].forEach((v) => {
+      const d = (pos.getX(v) - local.x) ** 2 + (pos.getY(v) - local.y) ** 2 + (pos.getZ(v) - local.z) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = v;
+      }
+    });
+    setHover((h) => (h && h.v === best ? h : { v: best, point: [local.x, local.y, local.z] }));
+  };
+  const hoverText = hover ? modelHoverText(model, hover.v) : null;
+
+  return (
+    <group>
+      <mesh
+        geometry={geometry}
+        renderOrder={6}
+        onPointerMove={onPointerMove}
+        onPointerOut={() => setHover(null)}
+      >
+        <meshStandardMaterial vertexColors side={THREE.DoubleSide} roughness={0.55} metalness={0.02} />
+      </mesh>
+      {hoverText ? (
+        <Html position={hover.point} style={MODEL_HOVER_STYLE} zIndexRange={[30, 20]}>
+          <span data-model-hover>{hoverText}</span>
+        </Html>
+      ) : null}
+      {annulus ? (
+        <Line
+          points={annulus}
+          color={model.annulusTraced ? '#ffeb3b' : '#bdbdbd'}
+          lineWidth={model.annulusTraced ? 3 : 1.5}
+          dashed={!model.annulusTraced}
+          dashSize={0.01}
+          gapSize={0.008}
+          renderOrder={7}
+        />
+      ) : null}
+      {guides.map((g, i) => (
+        <Line key={`g${i}`} points={g} color="#ffffff" lineWidth={2} depthTest={false} renderOrder={8} />
+      ))}
+      {model.markers.map((m) => (
+        <Html key={m.key} position={toBox(m.mm)} center sprite style={{ ...MODEL_LABEL_STYLE, color: m.color }}>
+          {m.text}
+        </Html>
+      ))}
+      {model.segments.map((sg) => (
+        <Html key={sg.text} position={toBox(sg.mm)} center sprite style={MODEL_LABEL_STYLE}>
+          {sg.text}
+        </Html>
+      ))}
+    </group>
+  );
+}
+
 function MeasureBall({ position, color, radius, invScale, live }) {
   return (
     <group position={position} scale={invScale}>
@@ -673,6 +810,8 @@ function VolumeMesh({
   liveDraft,
   valvePositions,
   valvePose,
+  leafletModels,
+  showVolume,
 }) {
   const materialRef = useRef();
   const { gl, size } = useThree();
@@ -854,7 +993,7 @@ function VolumeMesh({
 
   return (
     <group scale={scale}>
-      <mesh>
+      <mesh visible={showVolume}>
         <boxGeometry args={[1, 1, 1]} />
         <shaderMaterial
           ref={materialRef}
@@ -886,6 +1025,9 @@ function VolumeMesh({
           mprBasis={mprBasis}
         />
       )}
+      {(leafletModels || []).map((m) => (
+        <LeafletModel key={m.kind} volume={volume} model={m} />
+      ))}
       <MeasurementOverlay
         volume={volume}
         measurements={measurements}
@@ -898,11 +1040,35 @@ function VolumeMesh({
   );
 }
 
-function CameraRig({ resetToken, onInteractive }) {
+function CameraRig({ resetToken, viewRequest, onInteractive }) {
   const controls = useRef();
   const drag = useRef(null);
   const { camera, gl } = useThree();
   const prev = useRef(resetToken);
+  const prevView = useRef(viewRequest?.token);
+
+  // Look at a target from a direction, with a given up (e.g. a valve's surgical view)
+  useEffect(() => {
+    if (!viewRequest || viewRequest.token === prevView.current) return;
+    prevView.current = viewRequest.token;
+    const { target, dir, up, distance } = viewRequest;
+    camera.position.set(
+      target[0] + dir[0] * distance,
+      target[1] + dir[1] * distance,
+      target[2] + dir[2] * distance
+    );
+    camera.up.set(up[0], up[1], up[2]);
+    camera.lookAt(target[0], target[1], target[2]);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+    const c = controls.current;
+    if (c) {
+      c.target.set(target[0], target[1], target[2]);
+      c.update();
+      camera.up.set(up[0], up[1], up[2]);
+      camera.lookAt(target[0], target[1], target[2]);
+    }
+  }, [viewRequest, camera]);
 
   useEffect(() => {
     if (resetToken === prev.current) return;
@@ -1069,6 +1235,9 @@ const VolumeRenderer = ({
   liveDraft,
   valvePositions = null,
   valvePose = null,
+  leafletModels = null,
+  showVolume = true,
+  viewRequest = null,
   cameraResetToken = 0,
   forceHighQuality = false,
 }) => {
@@ -1105,9 +1274,12 @@ const VolumeRenderer = ({
         liveDraft={liveDraft}
         valvePositions={valvePositions}
         valvePose={valvePose}
+        leafletModels={leafletModels}
+        showVolume={showVolume}
       />
       <CameraRig
         resetToken={cameraResetToken}
+        viewRequest={viewRequest}
         onInteractive={setInteractive}
       />
     </>

@@ -7,6 +7,7 @@ import {
   frameMetrics,
   heightMap,
   makeSampler,
+  mergeCutExtremes,
 } from '../../utils/valveAnalysis';
 
 /**
@@ -16,8 +17,7 @@ import {
  * measured (a frame at a time, so the page stays responsive); the largest
  * orifice over the cycle is the MVA.
  */
-export default function useValveAnalysis({ volume, timeIndex, result }) {
-  const [thresholdOverride, setThresholdOverride] = useState(null);
+export default function useValveAnalysis({ volume, timeIndex, result, thresholdOverride, setThresholdOverride }) {
   const [cycle, setCycle] = useState(null);
   const [progress, setProgress] = useState(null);
   const runRef = useRef(0);
@@ -29,10 +29,6 @@ export default function useValveAnalysis({ volume, timeIndex, result }) {
     setProgress(null);
   }, [volume, result, thresholdOverride]);
 
-  useEffect(() => {
-    setThresholdOverride(null);
-  }, [volume]);
-
   useEffect(
     () => () => {
       runRef.current += 1;
@@ -43,10 +39,13 @@ export default function useValveAnalysis({ volume, timeIndex, result }) {
   const frame = useMemo(() => {
     if (!result?.ok) return null;
     const sample = makeSampler(volume, timeIndex);
-    const auto = estimateThreshold(sample, result).threshold;
+    const levels = estimateThreshold(sample, result);
+    const auto = levels.threshold;
     const threshold = thresholdOverride ?? auto;
-    const map = heightMap(sample, result, threshold);
+    const rawMap = heightMap(sample, result, threshold);
     const profiles = result.cuts.map((cut) => cutProfile(sample, result, cut, threshold));
+    // Summary numbers agree with the finer per-cut traces
+    const map = { ...rawMap, stats: mergeCutExtremes(rawMap.stats, profiles, result) };
     let worst = null;
     profiles.forEach((p, i) => {
       if (p.maxHeight != null && (worst == null || p.maxHeight > profiles[worst].maxHeight)) worst = i;
@@ -57,6 +56,7 @@ export default function useValveAnalysis({ volume, timeIndex, result }) {
     });
     return {
       autoThreshold: auto,
+      levels,
       threshold,
       map,
       profiles,
