@@ -64,7 +64,14 @@ export function drawCaliper(ctx, a, b, { color, width = 2, tick = 6, label = nul
     drawLine(ctx, { x: p.x - nx * tick, y: p.y - ny * tick }, { x: p.x + nx * tick, y: p.y + ny * tick }, color, width)
   );
   if (label) {
-    const off = tick + fontPx * 0.9;
+    // Clear of the line by the label's own half-size along the normal, so a
+    // label beside a vertical caliper does not cover what it measures
+    ctx.save();
+    ctx.font = `600 ${Math.round(fontPx)}px Arial, Helvetica, sans-serif`;
+    const halfW = (ctx.measureText(label).width + fontPx * 0.7) / 2;
+    ctx.restore();
+    const halfH = (fontPx * 1.35) / 2;
+    const off = tick + 3 + Math.abs(nx) * halfW + Math.abs(ny) * halfH;
     drawTag(ctx, (a.x + b.x) / 2 + side * nx * off, (a.y + b.y) / 2 + side * ny * off, label, color, fontPx);
   }
 }

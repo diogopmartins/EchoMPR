@@ -353,7 +353,7 @@ function CutCanvas({
 
     // Measurement calipers: prolapse height and length (red), coaptation gap (orange)
     if (calipers && profile) {
-      const font = Math.max(10, r * 2.3);
+      const font = Math.max(10, r * 1.8);
       const tick = Math.max(4, r * 0.9);
       const lw = Math.max(1.5, r * 0.32);
       const xy = (x, y) => {

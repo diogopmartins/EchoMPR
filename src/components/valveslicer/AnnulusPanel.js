@@ -261,7 +261,8 @@ export function TentingSection({ result, frame, onOpenCut, ctx, closedNow, timeI
   }
   let widest = null;
   profiles.forEach((p, i) => {
-    if (p.tentingAreaMm2 > 0 && (widest == null || p.tentingAreaMm2 > profiles[widest].tentingAreaMm2)) widest = i;
+    // At least 0.01 cm², so a flat valve does not list a "largest" area of 0.00
+    if (p.tentingAreaMm2 >= 1 && (widest == null || p.tentingAreaMm2 > profiles[widest].tentingAreaMm2)) widest = i;
   });
   const mp = main != null ? profiles[main] : null;
   const mc = main != null ? result.cuts[main] : null;
