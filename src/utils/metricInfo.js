@@ -36,6 +36,14 @@ export const SOURCES = {
     label: 'Tenting volume in functional MR vs controls',
     url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC7368231/',
   },
+  stenosis: {
+    label: '2020 ACC/AHA guideline: severe mitral stenosis is MVA ≤ 1.5 cm² (summary)',
+    url: 'https://consultqd.clevelandclinic.org/perspectives-on-the-2020-acc-aha-guideline-for-valvular-heart-disease-focus-on-the-mitral-valve',
+  },
+  besler: {
+    label: 'Besler et al. 2018: coaptation gap and tricuspid TEER success',
+    url: 'https://pubmed.ncbi.nlm.nih.gov/?term=Besler+tricuspid+edge-to-edge+repair+predictors+procedural+success+2018',
+  },
   fukuda: {
     label: 'Fukuda et al., Circulation 2005: TV tethering and residual TR',
     url: 'https://pubmed.ncbi.nlm.nih.gov/?term=Fukuda+tricuspid+valve+tethering+predicts+residual+tricuspid+regurgitation+after+tricuspid+annuloplasty',
@@ -312,6 +320,31 @@ const INFO = {
     normal: 'EVEREST: at least 4.0 cm².',
     source: SOURCES.everest,
   },
+
+  /* ---------------------------------------------------- Clip suitability -- */
+  clipZones: (c) => ({
+    title: 'Suitable clip areas',
+    text:
+      c.kind === 'mv'
+        ? 'Each cut is a candidate clip position on the coaptation line (the long-axis grasping view through it). From the leaflet trace in this frame it checks that both leaflets are long enough to grasp, that the coaptation is within the EVEREST limits (flail gap < 10 mm, coaptation depth ≤ 11 mm), and whether there is a lesion to treat there (prolapse or a gap). Flail width < 15 mm, MVA ≥ 4.0 cm² and the orifice left after a clip apply to every position once known. Read it in systole.'
+        : 'Each cut is a candidate clip position on a coaptation line. From the leaflet trace in this frame it checks that both leaflets reach the coaptation, whether there is a gap to treat there, and how wide it is: smaller gaps (about 7 mm or less) predict tricuspid TEER success. Read it in systole.',
+    normal: 'Calcification, clefts, perforation and chordae in the grasping zone are not assessed: check them on the images.',
+    source: c.kind === 'mv' ? SOURCES.everest : SOURCES.besler,
+  }),
+  clipLeafletLengths: {
+    title: 'Leaflet lengths at this position',
+    text: 'Length of each leaflet along its atrial surface, from the end of the trace (the hinge once the annulus is traced) to the coaptation point, or to the edge of a gap. The free edge below the coaptation point is not included, so the hinge-to-tip length is a few mm longer.',
+    normal: 'MV: a posterior leaflet of at least 10 mm is commonly required for a secure grasp.',
+  },
+  clipStatus: (c) => ({
+    title: 'Clip suitability',
+    text: 'Clip target: a lesion here and the anatomy within the criteria. Suitable: within the criteria, no lesion found here. Caution: possible, with a concern. Unfavourable: outside the anatomical criteria. Hover over a status for the reasons.',
+    normal:
+      c.kind === 'mv'
+        ? 'An orifice left after a clip of 1.5 cm² or less would be in the severe-stenosis range.'
+        : 'Tricuspid: a coaptation gap above about 7 mm makes a caution.',
+    source: c.kind === 'mv' ? SOURCES.stenosis : SOURCES.besler,
+  }),
 
   /* -------------------------------------------------------- Slicer header -- */
   cutSpacing: {

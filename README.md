@@ -61,6 +61,7 @@ The app follows the valve axis from the atrial side and takes the first voxel br
 
 - **Prolapse map:** leaflet height over the valve outline as a colour scale (red = towards the atrium), on the surgical-view map. Prolapse is a height over 2 mm. It reports the maximum, the area above 2 mm, the width along the coaptation line, and a table per segment (A1–P3 for the MV, A/S/P for the TV).
 - **Per-cut measurements:** each cut shows the traced leaflet (red where above 2 mm), its maximum height and which leaflet, the length of the prolapsing part, and the **coaptation gap**. The gap is the stretch without tissue at the coaptation point, bounded by leaflets on both sides.
+- **Calipers on the images** (**Calipers** button, on by default): in each cut a red vertical caliper from the reference to the highest point (prolapse height), a red horizontal caliper over the part above +2 mm (prolapse length), and an orange caliper across the coaptation gap at the reference level, each with its value. On the surgical-view map: the MV prolapse width along the commissural direction (red) and each cut's gap at valve level (orange, the widest labelled).
 
 ### TEER planning (MV)
 
@@ -75,6 +76,18 @@ The app follows the valve axis from the atrial side and takes the first voxel br
 - **Find MVA over the cycle:** in every frame, sections between the valve level and 15 mm towards the LV are flood-filled from the coaptation centre. The sections are planes, or surfaces parallel to the saddle once the annulus is traced. Regions that reach the valve outline are not enclosed by leaflets and are skipped. An enclosed region only counts if it carries on into the ventricle; the funnel of a closed, tented valve does not. The smallest enclosed area per frame is the orifice, and the largest over the open frames of the cycle is reported as the MVA.
 - **Virtual clip:** closes a band across the orifice at the chosen cut. The band is the device width (4, 6 or 10 mm) plus 2 mm of approximated tissue on each side. This is a rough geometric estimate, not a validated predictor.
 - **Criteria:** a table checks the values against the EVEREST anatomical criteria: coaptation length ≥ 2 mm, coaptation depth ≤ 11 mm, flail gap < 10 mm, flail width < 15 mm, posterior leaflet ≥ 10 mm, MVA ≥ 4.0 cm².
+
+### Suitable clip areas (MV and TV)
+
+The **Show suitable clip areas** tick box treats each cut as a candidate clip position on the coaptation line, since each cut is the long-axis grasping view through that point. Ticking it runs the cycle analysis if needed, so open frames, the MVA and the orifice left after a clip are known.
+
+- **Clip target** (green, ◎): there is a lesion to treat at this position (prolapse or a coaptation gap), and the anatomy is within the criteria.
+- **Suitable** (light green): within the criteria, but no lesion was found here.
+- **Caution** (amber): possible, with a concern. Examples are a commissural position, a posterior leaflet under 10 mm, a flail wider than 15 mm, about 1.5 cm² or less left after a clip here, or (TV) a gap above about 7 mm.
+- **Unfavourable** (red): outside the MV EVEREST limits (flail gap ≥ 10 mm, coaptation depth > 11 mm, MVA < 4.0 cm²), or a leaflet too short to grasp.
+- **Not assessed** (grey): no leaflets found, or an open frame. On an open frame a button jumps to a systolic one.
+
+Leaflet lengths run along the atrial surface from the hinge to the coaptation point, so they are a lower bound of the hinge-to-tip length. They are only measured and checked once the 3D annulus is traced, because without it the hinges are not known. The key map shows a device-wide bar at each position, coloured by status. Each cut shows its status, and hovering over a status lists the reasons. Calcification, clefts, perforation and chordae are not assessed; check them on the images. This is a geometric screen of the images, not a treatment decision.
 
 ### 3D annulus
 

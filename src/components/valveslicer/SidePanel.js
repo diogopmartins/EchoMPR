@@ -2,6 +2,7 @@ import React from 'react';
 import styled from 'styled-components';
 import { CLIP_DEVICES, PROLAPSE_MM, TEER_STEPS, teerCriteria } from '../../utils/valveAnalysis';
 import { REFERENCES } from '../../utils/annulusFit';
+import { STATUS, valveLimits } from '../../utils/clipSuitability';
 import { DASH, cm2, mm, mmSigned } from '../../utils/format';
 import { infoContext } from '../../utils/metricInfo';
 import Tip from '../Tip';
@@ -200,6 +201,185 @@ function CutsSection({ result, frame, onOpenCut, ctx }) {
         </tbody>
       </Table>
       <Note>Highest: + above / − below the reference. Depth: coaptation depth below it. Click a row to open the cut.</Note>
+    </Section>
+  );
+}
+
+const Swatch = styled.span`
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.45rem;
+  border-radius: 2px;
+  margin-right: 0.25rem;
+  background: ${(p) => p.$color};
+  vertical-align: middle;
+`;
+
+const Check = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  color: #e0e0e0;
+
+  input {
+    accent-color: #4caf50;
+    margin: 0;
+  }
+`;
+
+/** Short leaflet name for the table: posterior → P, anterior → A, septal → S. */
+const shortLeaflet = (name) => (name ? name[0].toUpperCase() : '?');
+
+function ClipSection({
+  result,
+  clipSites,
+  showClipZones,
+  setShowClipZones,
+  clip,
+  onOpenCut,
+  ctx,
+  closedNow,
+  timeIndex,
+  analysis,
+  onSeek,
+}) {
+  const isMv = result.kind === 'mv';
+  const jumps = analysis.cycle?.jumps;
+  // A systolic frame to go to from an open one: the worst lesion, else the first closed frame
+  const systolic = jumps
+    ? jumps.maxProlapse ?? jumps.widestGap ?? jumps.closed.findIndex((c) => c)
+    : null;
+  const orifice = analysis.cycle?.best;
+  const limits = valveLimits(result, {
+    prolapseWidthMm: analysis.frame.map.stats.prolapseWidthMm,
+    mvaMm2: orifice ? orifice.areaMm2 : null,
+  });
+  const counts = {};
+  (clipSites || []).forEach((s) => {
+    counts[s.status] = (counts[s.status] || 0) + 1;
+  });
+  return (
+    <Section>
+      <SectionHead>
+        <Tip id="clipZones" ctx={ctx}>
+          Clip suitability
+        </Tip>
+      </SectionHead>
+      <Check>
+        <input
+          type="checkbox"
+          checked={showClipZones}
+          onChange={(e) => {
+            setShowClipZones(e.target.checked);
+            // Open and closed frames (and the MVA) come from the cycle analysis
+            if (e.target.checked && !analysis.cycle && !analysis.progress) analysis.runCycle();
+          }}
+          aria-label="Show suitable clip areas"
+        />
+        Show suitable clip areas
+      </Check>
+      {showClipZones && clipSites ? (
+        <>
+          {analysis.progress ? (
+            <Note>
+              Analysing the cycle ({analysis.progress.done}/{analysis.progress.total}) to tell systolic frames from
+              open ones…
+            </Note>
+          ) : null}
+          {limits.map((l) =>
+            l.level === 'fail' ? <Bad key={l.text}>Whole valve: {l.text}</Bad> : <Warn key={l.text}>Whole valve: {l.text}</Warn>
+          )}
+          {closedNow === false ? (
+            <Row>
+              <Warn>T{timeIndex + 1} is an open frame: clip positions are judged in systole.</Warn>
+              {systolic != null && systolic >= 0 ? (
+                <SmallButton type="button" onClick={() => onSeek(systolic)}>
+                  Go to T{systolic + 1}
+                </SmallButton>
+              ) : null}
+            </Row>
+          ) : null}
+          {!isMv ? (
+            <Row>
+              <span>Clip width</span>
+              <SmallSelect value={clip.device} onChange={(e) => clip.setDevice(Number(e.target.value))}>
+                {[4, 6, 10].map((w) => (
+                  <option key={w} value={w}>
+                    {w} mm
+                  </option>
+                ))}
+              </SmallSelect>
+            </Row>
+          ) : null}
+          <div>
+            {['target', 'suitable', 'caution', 'unfavourable', 'unknown']
+              .filter((k) => counts[k])
+              .map((k) => (
+                <span key={k} style={{ marginRight: '0.5rem', whiteSpace: 'nowrap' }}>
+                  <Swatch $color={STATUS[k].color} />
+                  {STATUS[k].label} {counts[k]}
+                </span>
+              ))}
+          </div>
+          <Table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Cut</th>
+                <RTh>
+                  <Tip id="clipLeafletLengths" ctx={ctx}>
+                    Leaflets
+                  </Tip>
+                </RTh>
+                <RTh>
+                  <Tip id="clipStatus" ctx={ctx}>
+                    Clip
+                  </Tip>
+                </RTh>
+              </tr>
+            </thead>
+            <tbody>
+              {clipSites.map((site) => {
+                const st = STATUS[site.status];
+                const L = site.lengths;
+                return (
+                  <tr key={site.index} className="clickable" onClick={() => onOpenCut(site.index)}>
+                    <td>{site.index}</td>
+                    <td>{site.label}</td>
+                    <Val>
+                      {site.status === 'unknown' || !L.known
+                        ? DASH
+                        : `${shortLeaflet(L.leftName)} ${L.left.toFixed(0)} · ${shortLeaflet(L.rightName)} ${L.right.toFixed(0)}`}
+                    </Val>
+                    <Val>
+                      <Tip
+                        info={{
+                          title: `Cut ${site.index} (${site.label}): ${st.label}`,
+                          text: site.reasons.map((x) => x.text).join(' · '),
+                          normal: st.text,
+                        }}
+                      >
+                        <span style={{ color: st.color, fontWeight: site.lesion ? 700 : 400 }}>
+                          {site.lesion && site.status !== 'unknown' ? '◎ ' : ''}
+                          {st.label}
+                        </span>
+                      </Tip>
+                    </Val>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </Table>
+          <Note>
+            Leaflet lengths in mm from the hinge to the coaptation
+            {result.annulus ? '' : ' (trace the 3D annulus to measure and check them)'}. ◎: a lesion to treat at
+            that position (prolapse or gap). The key map shows a {Math.max(clip.device, 4)} mm bar per position along
+            the coaptation line, and each cut its status. Read it in systole; calcification, clefts and chordae are
+            not assessed.
+          </Note>
+        </>
+      ) : null}
     </Section>
   );
 }
@@ -462,6 +642,19 @@ export default function SidePanel(props) {
         timeIndex={timeIndex}
       />
       <CutsSection result={result} frame={frame} onOpenCut={onOpenCut} ctx={ctx} />
+      <ClipSection
+        result={result}
+        clipSites={props.clipSites}
+        showClipZones={props.showClipZones}
+        setShowClipZones={props.setShowClipZones}
+        clip={props.clip}
+        onOpenCut={onOpenCut}
+        ctx={ctx}
+        closedNow={closedNow}
+        timeIndex={timeIndex}
+        analysis={analysis}
+        onSeek={onSeek}
+      />
       <CycleSection
         analysis={analysis}
         timeIndex={timeIndex}
