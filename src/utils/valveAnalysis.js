@@ -205,6 +205,8 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
   // the MV is the commissural direction (the EVEREST "flail width").
   let alongMin = Infinity;
   let alongMax = -Infinity;
+  let alongYSum = 0;
+  let alongN = 0;
   const pxArea = mmPerPx * mmPerPx;
   for (let j = 0; j < height; j++) {
     const y = frame.yMin + (j + 0.5) * mmPerPx;
@@ -245,6 +247,8 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
         prolapseAreaMm2 += pxArea;
         alongMin = Math.min(alongMin, x);
         alongMax = Math.max(alongMax, x);
+        alongYSum += y;
+        alongN++;
       }
     }
   }
@@ -260,6 +264,12 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
       maxSegment,
       prolapseAreaMm2,
       prolapseWidthMm: alongMax >= alongMin ? alongMax - alongMin + mmPerPx : 0,
+      // Where that width runs, in key-map coordinates: x0 → x1 at the mean y
+      // of the prolapsing area (x1 − x0 is the width)
+      prolapseExtent:
+        alongN > 0
+          ? { x0: alongMin - mmPerPx / 2, x1: alongMax + mmPerPx / 2, y: alongYSum / alongN }
+          : null,
       maxTentingMm,
       maxTentingAt,
       tentingVolumeMm3,
@@ -280,6 +290,11 @@ export function heightMap(sample, result, threshold, mmPerPx = 0.5) {
  * the depth of the leaflets at the coaptation (within 3 mm of the target).
  * Each trace point is { x, h, r }: h relative to the reference, r the
  * reference height above the picked plane (the trace sits at y = −(h + r)).
+ * For drawing the measurements as calipers it also returns, in cut
+ * coordinates: maxPoint (the highest point), prolapseRun (x0 → x1 is the
+ * prolapse length; y0, y1 the trace at its ends) and gapRun (x0 → x1 is the
+ * gap, measured at the reference height −r; left and right are the leaflet
+ * edges on either side).
  */
 export function cutProfile(sample, result, cut, threshold, step = 0.25) {
   const down = towardVentricle(result);
@@ -300,6 +315,10 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
       gapMm: 0,
       tentingAreaMm2: 0,
       tentingHeightMm: null,
+      maxPoint: null,
+      prolapseRun: null,
+      gapRun: null,
+      leafletLengths: { left: 0, right: 0, coaptX: null },
     };
   }
   let best = -1;
@@ -307,12 +326,19 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
     if (p.h != null && (best < 0 || p.h > pts[best].h)) best = i;
   });
   let prolapseWidthMm = 0;
+  let prolapseRun = null;
   if (best >= 0 && pts[best].h > PROLAPSE_MM) {
     let a = best;
     let b = best;
     while (a > 0 && pts[a - 1].h != null && pts[a - 1].h > PROLAPSE_MM) a--;
     while (b < pts.length - 1 && pts[b + 1].h != null && pts[b + 1].h > PROLAPSE_MM) b++;
     prolapseWidthMm = (b - a + 1) * step;
+    prolapseRun = {
+      x0: pts[a].x - step / 2,
+      x1: pts[b].x + step / 2,
+      y0: -(pts[a].h + pts[a].r),
+      y1: -(pts[b].h + pts[b].r),
+    };
   }
   // Gap: the run of samples without tissue at valve level that contains the
   // coaptation target (deeper tissue, e.g. chordae, does not close it).
@@ -322,21 +348,63 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
     if (Math.abs(p.x - cut.target.x) < Math.abs(pts[k].x - cut.target.x)) k = i;
   });
   let gapMm = 0;
+  let gapRun = null;
+  let gapA = -1;
+  let gapB = -1;
   if (open(pts[k])) {
     let a = k;
     let b = k;
     while (a > 0 && open(pts[a - 1])) a--;
     while (b < pts.length - 1 && open(pts[b + 1])) b++;
     // A run that reaches the edge of the outline is not bounded by two leaflets.
-    if (a > 0 && b < pts.length - 1) gapMm = (b - a + 1) * step;
+    if (a > 0 && b < pts.length - 1) {
+      gapMm = (b - a + 1) * step;
+      gapA = a;
+      gapB = b;
+      const edge = (p) => ({ x: p.x, y: -(p.h + p.r) });
+      gapRun = {
+        x0: pts[a].x - step / 2,
+        x1: pts[b].x + step / 2,
+        r: pts[Math.round((a + b) / 2)].r,
+        left: edge(pts[a - 1]),
+        right: edge(pts[b + 1]),
+      };
+    }
   }
   let tentingAreaMm2 = 0;
   let deepest = null;
-  pts.forEach((p) => {
+  let deepestAt = -1;
+  pts.forEach((p, i) => {
     if (p.h == null) return;
     if (p.h < 0) tentingAreaMm2 += -p.h * step;
-    if (Math.abs(p.x - cut.target.x) <= 3 && (deepest == null || p.h < deepest)) deepest = p.h;
+    if (Math.abs(p.x - cut.target.x) <= 3 && (deepest == null || p.h < deepest)) {
+      deepest = p.h;
+      deepestAt = i;
+    }
   });
+  // Leaflet lengths along the atrial surface, from the ends of the trace (the
+  // hinges once the annulus is traced) to the coaptation point (the deepest
+  // point by the coaptation target), or to the edges of a gap. The free edge
+  // below the coaptation point is not on that surface, so these are lower
+  // bounds of the hinge-to-tip length.
+  const surfaceLength = (from, to) => {
+    let len = 0;
+    for (let i = Math.max(0, from); i < Math.min(to, pts.length - 1); i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      if (open(a) || open(b)) continue;
+      len += Math.hypot(b.x - a.x, b.h + b.r - (a.h + a.r));
+    }
+    return len;
+  };
+  const coaptIdx = gapMm > 0 ? null : deepestAt >= 0 ? deepestAt : k;
+  const leftEnd = gapMm > 0 ? gapA - 1 : coaptIdx;
+  const rightStart = gapMm > 0 ? gapB + 1 : coaptIdx;
+  const leafletLengths = {
+    left: surfaceLength(0, leftEnd),
+    right: surfaceLength(rightStart, pts.length - 1),
+    coaptX: coaptIdx == null ? null : pts[coaptIdx].x,
+  };
   const maxX = best >= 0 ? pts[best].x : null;
   return {
     points: pts,
@@ -347,6 +415,10 @@ export function cutProfile(sample, result, cut, threshold, step = 0.25) {
     gapMm,
     tentingAreaMm2,
     tentingHeightMm: deepest == null || gapMm > 0 ? null : Math.max(0, -deepest),
+    maxPoint: best >= 0 ? { x: pts[best].x, h: pts[best].h, r: pts[best].r } : null,
+    prolapseRun,
+    gapRun,
+    leafletLengths,
   };
 }
 

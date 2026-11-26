@@ -77,9 +77,17 @@ describe('per-cut leaflet traces', () => {
     expect(p5.prolapseWidthMm).toBeGreaterThan(2);
     expect(p5.prolapseWidthMm).toBeLessThan(8);
     expect(p5.gapMm).toBe(0);
+    // Caliper positions: the run measures the length and holds the highest point
+    const run = p5.prolapseRun;
+    expect(run.x1 - run.x0).toBeCloseTo(p5.prolapseWidthMm, 6);
+    expect(p5.maxPoint.x).toBeGreaterThanOrEqual(run.x0);
+    expect(p5.maxPoint.x).toBeLessThanOrEqual(run.x1);
+    expect(p5.maxPoint.h).toBeCloseTo(p5.maxHeight, 6);
+    expect(p5.gapRun).toBeNull();
     const p1 = cutProfile(sample, mvResult, mvResult.cuts[0], thr);
     expect(p1.maxHeight).toBeLessThan(PROLAPSE_MM);
     expect(p1.prolapseWidthMm).toBe(0);
+    expect(p1.prolapseRun).toBeNull();
   });
 
   test('cut 5 in diastole reports the open orifice as a gap', () => {
@@ -87,6 +95,13 @@ describe('per-cut leaflet traces', () => {
     // The fan cut through Mid runs along y at x = 24: the hole spans 2·b = 10 mm.
     expect(p5.gapMm).toBeGreaterThan(2 * MV_ORIFICE.b - 1.5);
     expect(p5.gapMm).toBeLessThan(2 * MV_ORIFICE.b + 1);
+    // Caliper: the gap spans x0 → x1 between the two leaflet edges, round the target
+    const g = p5.gapRun;
+    expect(g.x1 - g.x0).toBeCloseTo(p5.gapMm, 6);
+    expect(g.left.x).toBeLessThan(g.x0);
+    expect(g.right.x).toBeGreaterThan(g.x1);
+    expect(g.x0).toBeLessThan(mvResult.cuts[4].target.x);
+    expect(g.x1).toBeGreaterThan(mvResult.cuts[4].target.x);
   });
 });
 
@@ -166,8 +181,10 @@ describe('tricuspid gap', () => {
     profiles.slice(0, 3).forEach((p) => {
       expect(p.gapMm).toBeGreaterThan(TV_GAP_MM - 1);
       expect(p.gapMm).toBeLessThan(TV_GAP_MM + 1);
+      expect(p.gapRun.x1 - p.gapRun.x0).toBeCloseTo(p.gapMm, 6);
     });
     profiles.slice(3).forEach((p) => expect(p.gapMm).toBe(0));
+    profiles.slice(3).forEach((p) => expect(p.gapRun).toBeNull());
   });
 });
 

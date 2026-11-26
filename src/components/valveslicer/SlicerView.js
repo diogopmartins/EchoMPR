@@ -13,9 +13,11 @@ import {
   virtualClip,
 } from '../../utils/valveAnalysis';
 import { REFERENCES } from '../../utils/annulusFit';
+import { STATUS, assessClipSites } from '../../utils/clipSuitability';
 import { mm, mmSigned } from '../../utils/format';
 import { infoContext } from '../../utils/metricInfo';
 import Tip from '../Tip';
+import { CALIPER_COLORS, drawCaliper, drawLine } from './calipers';
 import { CUT_COLOR } from './drawSlicerOverlay';
 import KeyMap from './KeyMap';
 import SidePanel from './SidePanel';
@@ -116,6 +118,20 @@ const CellLabel = styled.div`
   background: rgba(0, 0, 0, 0.65);
   border: 1px solid ${(p) => (p.$alert ? '#ff5252' : CUT_COLOR)};
   pointer-events: none;
+`;
+
+const ClipBadge = styled.div`
+  position: absolute;
+  top: 27px;
+  left: 6px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.7);
+  color: ${(p) => p.$color};
+  border: 1px solid ${(p) => p.$color};
+  pointer-events: ${(p) => (p.$interactive ? 'auto' : 'none')};
 `;
 
 const CellResult = styled.div`
@@ -227,6 +243,7 @@ function CutCanvas({
   hinges,
   aortic,
   teerPoints,
+  calipers,
   onImageClick,
 }) {
   const ref = useRef(null);
@@ -334,6 +351,71 @@ function CutCanvas({
       }
     }
 
+    // Measurement calipers: prolapse height and length (red), coaptation gap (orange)
+    if (calipers && profile) {
+      const font = Math.max(10, r * 1.8);
+      const tick = Math.max(4, r * 0.9);
+      const lw = Math.max(1.5, r * 0.32);
+      const xy = (x, y) => {
+        const q = P(x, y);
+        return { x: q.px, y: q.py };
+      };
+      // Label side: +1 or −1 along the caliper normal, towards point `to`
+      const sideTo = (a, b, to) => {
+        const nx = -(b.y - a.y);
+        const ny = b.x - a.x;
+        return (to.x - (a.x + b.x) / 2) * nx + (to.y - (a.y + b.y) / 2) * ny >= 0 ? 1 : -1;
+      };
+      const mp = profile.maxPoint;
+      const run = profile.prolapseRun;
+      if (run && mp && mp.h > PROLAPSE_MM) {
+        const color = CALIPER_COLORS.prolapse;
+        // Height: from the reference up to the highest point
+        const base = xy(mp.x, -mp.r);
+        const top = xy(mp.x, -(mp.h + mp.r));
+        const away = base.x > img.width * 0.72 ? -12 : 12;
+        drawCaliper(ctx, base, top, {
+          color,
+          width: lw,
+          tick,
+          fontPx: font,
+          label: mmSigned(mp.h),
+          side: sideTo(base, top, { x: base.x + away, y: base.y }),
+        });
+        // Length: along the cut, just above the prolapsing part
+        const yLine = -(mp.h + mp.r) - 2.5;
+        const a = xy(run.x0, yLine);
+        const b = xy(run.x1, yLine);
+        drawLine(ctx, a, xy(run.x0, run.y0), color, 1, [3, 3]);
+        drawLine(ctx, b, xy(run.x1, run.y1), color, 1, [3, 3]);
+        drawCaliper(ctx, a, b, {
+          color,
+          width: lw,
+          tick,
+          fontPx: font,
+          label: `${mm(run.x1 - run.x0)} long`,
+          side: sideTo(a, b, xy((run.x0 + run.x1) / 2, yLine - 5)),
+        });
+      }
+      const g = profile.gapRun;
+      if (g && profile.gapMm > 0) {
+        const color = CALIPER_COLORS.gap;
+        const a = xy(g.x0, -g.r);
+        const b = xy(g.x1, -g.r);
+        drawLine(ctx, a, xy(g.left.x, g.left.y), color, 1, [3, 3]);
+        drawLine(ctx, b, xy(g.right.x, g.right.y), color, 1, [3, 3]);
+        drawCaliper(ctx, a, b, {
+          color,
+          width: lw,
+          tick,
+          fontPx: font,
+          label: `gap ${mm(g.x1 - g.x0)}`,
+          // Label on the ventricular side, clear of the prolapse labels
+          side: sideTo(a, b, xy((g.x0 + g.x1) / 2, -g.r + 5)),
+        });
+      }
+    }
+
     // Annulus hinges (diamonds) and the annulus line in this cut
     const mark = (list, color, shape) => {
       list.forEach((h) => {
@@ -402,7 +484,7 @@ function CutCanvas({
         ctx.fillText(String(i + 1), p.px + r, p.py - r);
       });
     }
-  }, [volume, timeIndex, cut, windowCenter, windowWidth, widthPx, profile, showReference, hinges, aortic, teerPoints]);
+  }, [volume, timeIndex, cut, windowCenter, windowWidth, widthPx, profile, showReference, hinges, aortic, teerPoints, calipers]);
 
   const onClick = (e) => {
     if (!onImageClick || !ref.current || !scaleRef.current) return;
@@ -472,6 +554,8 @@ export default function SlicerView({
   const { result, hinges, setHinges, aortic, setAortic } = slicer;
   const [single, setSingle] = useState(null);
   const [showHeights, setShowHeights] = useState(true);
+  const [showCalipers, setShowCalipers] = useState(true);
+  const [showClipZones, setShowClipZones] = useState(false);
   const defaultCut = result.kind === 'mv' ? Math.ceil(result.cuts.length / 2) : 2;
   const [teerCut, setTeerCut] = useState(defaultCut);
   const [teerPoints, setTeerPoints] = useState({});
@@ -536,6 +620,22 @@ export default function SlicerView({
     return { ...virtualClip(orifice, analysisResult, site, coaptDir, device), site, coaptDir };
   }, [orifice, result, analysisResult, clipCut, device]);
   const showOrifice = orifice && analysis.cycle.bestFrame === timeIndex;
+
+  // ---- Clip suitability per cut (each cut is a candidate clip position)
+  const clipSites = useMemo(() => {
+    const fr = analysis.frame;
+    if (!fr) return null;
+    const afterClipMm2 = orifice
+      ? analysisResult.cuts.map((c) => {
+          const { site, coaptDir } = clipSiteForCut(analysisResult, c);
+          return virtualClip(orifice, analysisResult, site, coaptDir, device).afterMm2;
+        })
+      : null;
+    return assessClipSites(analysisResult, fr.profiles, {
+      afterClipMm2,
+      openFrame: Boolean(analysis.cycle) && !analysis.cycle.jumps.closed[timeIndex],
+    });
+  }, [analysis.frame, analysis.cycle, analysisResult, orifice, device, timeIndex]);
 
   const teer = {
     cutIndex: teerCut,
@@ -734,6 +834,14 @@ export default function SlicerView({
         >
           {result.kind === 'mv' ? 'Ao left' : 'Mirror'}
         </HeaderButton>
+        <HeaderButton
+          type="button"
+          $active={showCalipers}
+          onClick={() => setShowCalipers((v) => !v)}
+          title="Prolapse height and length (red) and coaptation gap (orange) drawn on the images"
+        >
+          Calipers
+        </HeaderButton>
         <HeaderButton type="button" onClick={() => slicer.setOpen(false)} title="Back to the MPR views">
           Back to MPR
         </HeaderButton>
@@ -778,12 +886,30 @@ export default function SlicerView({
                   hinges={cutMarks[cut.index].hinges}
                   aortic={cutMarks[cut.index].aortic}
                   teerPoints={showTeer ? teerPoints : null}
+                  calipers={showCalipers}
                   onImageClick={onImageClick}
                 />
                 <CellLabel $alert={alert}>
                   {cut.index} · {cut.label}
                 </CellLabel>
                 {prompt ? <Prompt>{prompt}</Prompt> : null}
+                {showClipZones && clipSites?.[i] ? (
+                  <ClipBadge
+                    $color={STATUS[clipSites[i].status].color}
+                    $interactive={!mode}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Tip
+                      info={{
+                        title: `Clip at cut ${cut.index}: ${STATUS[clipSites[i].status].label}`,
+                        text: clipSites[i].reasons.map((x) => x.text).join(' · '),
+                      }}
+                    >
+                      {clipSites[i].lesion && clipSites[i].status !== 'unknown' ? '◎ ' : ''}
+                      {STATUS[clipSites[i].status].label}
+                    </Tip>
+                  </ClipBadge>
+                ) : null}
                 <CellResult $alert={alert} $interactive={!mode} onClick={(e) => e.stopPropagation()}>
                   <CutSummary profile={profile} ctx={infoCtx} />
                 </CellResult>
@@ -809,6 +935,9 @@ export default function SlicerView({
             heights={showHeights ? frame?.map : null}
             orifice={showOrifice ? orifice : null}
             clip={showOrifice ? clipResult : null}
+            profiles={showCalipers ? frame?.profiles : null}
+            clipSites={showClipZones ? clipSites : null}
+            clipWidthMm={device}
             hinges={hinges}
           />
           <Note>
@@ -829,6 +958,9 @@ export default function SlicerView({
             onOpenCut={(index) => setSingle(index)}
             teer={teer}
             clip={{ device, setDevice, cutIndex: clipCut, setCutIndex: setClipCut, result: clipResult }}
+            clipSites={clipSites}
+            showClipZones={showClipZones}
+            setShowClipZones={setShowClipZones}
             annulus={annulus}
             timeIndex={timeIndex}
             frameCount={frameCount}

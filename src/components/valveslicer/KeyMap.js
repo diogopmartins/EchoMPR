@@ -10,7 +10,9 @@ import {
 import { CUT_COLOR, labelAnchor, labelEnd } from './drawSlicerOverlay';
 import { HEIGHT_RANGE, heightColor, heightGradientCss } from '../../utils/heightColors';
 import { REFERENCES } from '../../utils/annulusFit';
-import { mmSigned } from '../../utils/format';
+import { mm, mmSigned } from '../../utils/format';
+import { STATUS } from '../../utils/clipSuitability';
+import { CALIPER_COLORS, drawCaliper, drawLine } from './calipers';
 import { insideValve } from '../../utils/valveAnalysis';
 
 export const KEY_PX = 260;
@@ -62,6 +64,9 @@ export default function KeyMap({
   orifice,
   clip,
   hinges = [],
+  profiles = null,
+  clipSites = null,
+  clipWidthMm = 4,
 }) {
   const ref = useRef(null);
   const geomRef = useRef(null);
@@ -222,6 +227,62 @@ export default function KeyMap({
       ctx.fillText(String(s.index), s.end.x, s.end.y + 0.5);
     });
 
+    // Calipers: the prolapse width along the commissural direction (MV) and
+    // each cut's coaptation gap at valve level, the widest one labelled
+    if (profiles && live) {
+      const ext = heights?.stats?.prolapseExtent;
+      if (result.kind === 'mv' && ext && heights.stats.prolapseWidthMm > 0) {
+        drawCaliper(ctx, toPx(ext.x0, ext.y), toPx(ext.x1, ext.y), {
+          color: CALIPER_COLORS.prolapse,
+          width: 2,
+          tick: 4,
+          fontPx: 10,
+          label: `${mm(heights.stats.prolapseWidthMm)} wide`,
+          side: -1,
+        });
+      }
+      let widest = -1;
+      profiles.forEach((p, i) => {
+        if (p?.gapRun && (widest < 0 || p.gapMm > profiles[widest].gapMm)) widest = i;
+      });
+      profiles.forEach((p, i) => {
+        const g = p?.gapRun;
+        const cut = result.cuts[i];
+        if (!g || !cut) return;
+        drawCaliper(ctx, px(frameToWorld(cut, g.x0, 0)), px(frameToWorld(cut, g.x1, 0)), {
+          color: CALIPER_COLORS.gap,
+          width: 2.5,
+          tick: 3,
+          fontPx: 10,
+          label: i === widest ? `gap ${mm(p.gapMm)}` : null,
+          side: 1,
+        });
+      });
+    }
+
+    // Clip zones: a device-wide bar along the coaptation line at each cut,
+    // coloured by suitability; a white ring where there is a lesion to treat
+    if (clipSites && live) {
+      const half = Math.max(clipWidthMm, 4) / 2;
+      clipSites.forEach((site, i) => {
+        const cut = result.cuts[i];
+        if (!cut?.coaptDir) return;
+        const t = frameToWorld(cut, cut.target.x, cut.target.y);
+        const d = cut.coaptDir;
+        const a = px([t[0] - d[0] * half, t[1] - d[1] * half, t[2] - d[2] * half]);
+        const b = px([t[0] + d[0] * half, t[1] + d[1] * half, t[2] + d[2] * half]);
+        drawLine(ctx, a, b, STATUS[site.status].color, 6);
+        if (site.lesion && site.status !== 'unknown') {
+          const c = px(t);
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, 4.5, 0, Math.PI * 2);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+        }
+      });
+    }
+
     // Draggable point handles
     const pts = result.keyPoints.map((p) => ({ ...p, ...px(p.point) }));
     geomRef.current = { segs, pts, width: img.width, height: img.height };
@@ -241,7 +302,23 @@ export default function KeyMap({
       ctx.fillStyle = p.color;
       ctx.fillText(p.text, p.x + 7, p.y - 7);
     });
-  }, [img, result, frame, mmPerPx, windowCenter, windowWidth, active, dragKey, heights, orifice, clip, hinges]);
+  }, [
+    img,
+    result,
+    frame,
+    mmPerPx,
+    windowCenter,
+    windowWidth,
+    active,
+    dragKey,
+    heights,
+    orifice,
+    clip,
+    hinges,
+    profiles,
+    clipSites,
+    clipWidthMm,
+  ]);
 
   useEffect(() => () => cancelAnimationFrame(dragRef.current?.raf), []);
 
